@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState } from 'react';
 import { UploadedDocument, GenerationResponse } from '@/types';
 
-export type WizardStep = 'prompt' | 'upload' | 'design' | 'preview';
+export type WizardStep = 'prompt' | 'design' | 'preview';
 
 interface DesignChoices {
   style: 'simple' | 'techie' | 'corporate' | 'creative' | 'playful';
@@ -44,7 +44,7 @@ export const WizardProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [generationResult, setGenerationResult] = useState<GenerationResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const stepOrder: WizardStep[] = ['prompt', 'upload', 'design', 'preview'];
+  const stepOrder: WizardStep[] = ['prompt', 'design', 'preview'];
   const currentStepIndex = stepOrder.indexOf(currentStep);
 
   const goToNextStep = () => {

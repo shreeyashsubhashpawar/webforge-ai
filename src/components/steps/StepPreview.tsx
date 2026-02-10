@@ -5,6 +5,7 @@ import { ArrowLeft, Download, Copy, Check, AlertCircle } from 'lucide-react';
 import Header from '../Header';
 import { useWizard } from '@/store/WizardContext';
 import CodePreview from '../CodePreview';
+import LivePreview from '../LivePreview';
 import GenerationProgress from '../GenerationProgress';
 import QualityReport from '../QualityReport';
 import { GenerationResponse } from '@/types';
@@ -24,6 +25,8 @@ export default function StepPreview() {
 
   const [currentStep, setCurrentStep] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
 
   useEffect(() => {
     // Auto-generate on mount
@@ -78,31 +81,69 @@ export default function StepPreview() {
     if (!generationResult?.code) return;
 
     const code = generationResult.code;
-    const content = `<!DOCTYPE html>
+    
+    // Handle multi-page downloads
+    if (code.pages && code.pages.length > 0) {
+      code.pages.forEach((page, index) => {
+        const content = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${page.title || 'Page'}</title>
+  <style>
+${page.css || ''}
+  </style>
+</head>
+<body>
+${page.html || ''}
+  <script>
+${page.javascript || ''}
+  </script>
+</body>
+</html>`;
+
+        const blob = new Blob([content], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${page.id}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        // Add small delay between downloads
+        if (index < code.pages!.length - 1) {
+          setTimeout(() => {}, 100);
+        }
+      });
+    } else if (code.html) {
+      // Fallback for single-page format
+      const content = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Generated Website</title>
   <style>
-${code.css}
+${code.css || ''}
   </style>
 </head>
 <body>
 ${code.html}
   <script>
-${code.javascript}
+${code.javascript || ''}
   </script>
 </body>
 </html>`;
 
-    const blob = new Blob([content], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'website.html';
-    a.click();
-    URL.revokeObjectURL(url);
+      const blob = new Blob([content], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'website.html';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   };
 
   if (isGenerating) {
@@ -155,53 +196,88 @@ ${code.javascript}
 
         {/* Tabs */}
         <div className="bg-gray-800/50 border border-gray-700 rounded-t-lg flex gap-4 p-4 mb-0">
-          <button className="text-white font-semibold border-b-2 border-blue-500 pb-2 px-4">
+          <button
+            onClick={() => setViewMode('preview')}
+            className={`font-semibold pb-2 px-4 border-b-2 transition-colors ${
+              viewMode === 'preview'
+                ? 'text-white border-blue-500'
+                : 'text-gray-400 border-transparent'
+            }`}
+          >
             Preview
           </button>
-          <button className="text-gray-400 font-semibold px-4">Code</button>
-          {generationResult.quality && (
+          <button
+            onClick={() => setViewMode('code')}
+            className={`font-semibold pb-2 px-4 border-b-2 transition-colors ${
+              viewMode === 'code'
+                ? 'text-white border-blue-500'
+                : 'text-gray-400 border-transparent'
+            }`}
+          >
+            Code
+          </button>
+          {generationResult?.quality && (
             <button className="text-gray-400 font-semibold px-4">Quality Report</button>
           )}
         </div>
 
-        {/* Preview */}
-        <div className="bg-gray-800/50 border border-gray-700 border-t-0 rounded-b-lg p-6 mb-8">
-          {generationResult.code ? (
-            <>
-              <CodePreview code={generationResult.code} />
-              <div className="mt-6 flex gap-4">
-                <button
-                  onClick={handleCopyCode}
-                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white font-semibold px-6 py-3 rounded-lg transition-colors"
-                >
-                  {copiedCode ? (
-                    <>
-                      <Check className="w-5 h-5" />
-                      Copied!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-5 h-5" />
-                      Copy Code
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors"
-                >
-                  <Download className="w-5 h-5" />
-                  Download HTML
-                </button>
+        {/* Preview Tab */}
+        {viewMode === 'preview' && (
+          <div className="bg-gray-800/50 border border-gray-700 border-t-0 rounded-b-lg mb-8 h-[600px]">
+            {generationResult?.code ? (
+              <LivePreview
+                pages={generationResult.code.pages}
+                currentPageIndex={currentPageIndex}
+                onPageChange={setCurrentPageIndex}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <p className="text-gray-400">No preview available</p>
               </div>
-            </>
-          ) : (
-            <p className="text-gray-400">No code generated</p>
-          )}
-        </div>
+            )}
+          </div>
+        )}
+
+        {/* Code Tab */}
+        {viewMode === 'code' && (
+          <div className="bg-gray-800/50 border border-gray-700 border-t-0 rounded-b-lg p-6 mb-8">
+            {generationResult?.code ? (
+              <>
+                <CodePreview code={generationResult.code} />
+                <div className="mt-6 flex gap-4">
+                  <button
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white font-semibold px-6 py-3 rounded-lg transition-colors"
+                  >
+                    {copiedCode ? (
+                      <>
+                        <Check className="w-5 h-5" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-5 h-5" />
+                        Copy Code
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                    Download Files
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="text-gray-400">No code generated</p>
+            )}
+          </div>
+        )}
 
         {/* Quality Report */}
-        {generationResult.quality && (
+        {generationResult?.quality && (
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6 mb-8">
             <QualityReport quality={generationResult.quality} />
           </div>

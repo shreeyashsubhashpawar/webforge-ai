@@ -10,19 +10,26 @@ interface CodePreviewProps {
 
 export default function CodePreview({ code }: CodePreviewProps) {
   const [activeTab, setActiveTab] = useState<'preview' | 'html' | 'css' | 'js'>('preview');
+  const [selectedPage, setSelectedPage] = useState(0);
+
+  // Support both multi-page and legacy single-page formats
+  const pages = code.pages || (code.html ? [{ id: 'index', name: 'Home', html: code.html, css: code.css, javascript: code.javascript }] : []);
+  const currentPage = pages[selectedPage];
 
   const createPreviewUrl = () => {
+    if (!currentPage) return '';
+    
     const completeHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Preview</title>
-    <style>${code.css}</style>
+    <title>${currentPage.title || 'Preview'}</title>
+    <style>${currentPage.css || ''}</style>
 </head>
 <body>
-${code.html}
-${code.javascript ? `<script>${code.javascript}</script>` : ''}
+${currentPage.html}
+${currentPage.javascript ? `<script>${currentPage.javascript}</script>` : ''}
 </body>
 </html>`;
 
@@ -34,17 +41,19 @@ ${code.javascript ? `<script>${code.javascript}</script>` : ''}
     { id: 'preview' as const, label: 'Preview', icon: Eye },
     { id: 'html' as const, label: 'HTML', icon: FileCode },
     { id: 'css' as const, label: 'CSS', icon: FileCode },
-    ...(code.javascript ? [{ id: 'js' as const, label: 'JavaScript', icon: Code }] : []),
+    ...(currentPage?.javascript ? [{ id: 'js' as const, label: 'JavaScript', icon: Code }] : []),
   ];
 
   const getCodeContent = () => {
+    if (!currentPage) return '';
+    
     switch (activeTab) {
       case 'html':
-        return code.html;
+        return currentPage.html;
       case 'css':
-        return code.css;
+        return currentPage.css || '';
       case 'js':
-        return code.javascript;
+        return currentPage.javascript || '';
       default:
         return '';
     }
@@ -52,7 +61,26 @@ ${code.javascript ? `<script>${code.javascript}</script>` : ''}
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-      {/* Tabs */}
+      {/* Page Selector */}
+      {pages.length > 1 && (
+        <div className="border-b border-gray-200 bg-gray-50 px-6 py-3 flex gap-2">
+          {pages.map((page, index) => (
+            <button
+              key={page.id}
+              onClick={() => setSelectedPage(index)}
+              className={`px-3 py-1 rounded text-sm transition-colors ${
+                selectedPage === index
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              {page.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Code Tabs */}
       <div className="border-b border-gray-200 bg-gray-50">
         <div className="flex space-x-1 p-2">
           {tabs.map((tab) => {
@@ -110,11 +138,18 @@ ${code.javascript ? `<script>${code.javascript}</script>` : ''}
       <div className="border-t border-gray-200 bg-gray-50 px-6 py-3">
         <div className="flex items-center justify-between text-xs text-gray-600">
           <div className="flex space-x-4">
-            <span>HTML: {code.html.length} chars</span>
-            <span>CSS: {code.css.length} chars</span>
-            {code.javascript && <span>JS: {code.javascript.length} chars</span>}
+            {currentPage && (
+              <>
+                <span>HTML: {currentPage.html.length} chars</span>
+                <span>CSS: {(currentPage.css?.length || 0)} chars</span>
+                {currentPage.javascript && <span>JS: {currentPage.javascript.length} chars</span>}
+              </>
+            )}
           </div>
-          <span className="font-semibold">Framework: {code.framework || 'Vanilla'}</span>
+          <div className="flex items-center gap-4">
+            {pages.length > 1 && <span>Pages: {pages.length}</span>}
+            <span className="font-semibold">Framework: {code.framework || 'Vanilla'}</span>
+          </div>
         </div>
       </div>
     </div>

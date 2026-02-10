@@ -83,18 +83,22 @@ export class QualityScoringService {
    * Build the evaluation prompt
    */
   private buildEvaluationPrompt(code: GeneratedCode): string {
-    return `Evaluate this website code for quality and best practices:
+    let codePresentation = '';
 
-HTML (${code.html.length} characters):
-${code.html}
+    // Handle new multi-page format
+    if (code.pages && code.pages.length > 0) {
+      code.pages.forEach((page, index) => {
+        codePresentation += `\n=== PAGE ${index + 1}: ${page.name} ===\n\n`;
+        codePresentation += `HTML (${page.html.length} characters):\n${page.html}\n\n`;
+        codePresentation += `CSS (${page.css?.length || 0} characters):\n${page.css || 'No CSS'}\n\n`;
+        codePresentation += `JavaScript (${page.javascript?.length || 0} characters):\n${page.javascript || 'No JavaScript'}\n\n`;
+      });
+    } else if (code.html) {
+      // Fallback for legacy single-page format
+      codePresentation = `HTML (${code.html.length} characters):\n${code.html}\n\nCSS (${code.css?.length || 0} characters):\n${code.css || 'No CSS'}\n\nJavaScript (${code.javascript?.length || 0} characters):\n${code.javascript || 'No JavaScript'}`;
+    }
 
-CSS (${code.css.length} characters):
-${code.css}
-
-JavaScript (${code.javascript.length} characters):
-${code.javascript || 'No JavaScript code'}
-
-Provide a detailed quality evaluation with scores and actionable feedback.`;
+    return `Evaluate this website code for quality and best practices:\n\n${codePresentation}\n\nProvide a detailed quality evaluation with scores and actionable feedback.`;
   }
 
   /**
@@ -116,10 +120,22 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
    * Perform basic automated checks
    */
   private performBasicChecks(code: GeneratedCode, evaluation: QualityScore): void {
+    // Get all HTML and CSS content
+    let allHtml = '';
+    let allCss = '';
+
+    if (code.pages && code.pages.length > 0) {
+      allHtml = code.pages.map(p => p.html).join('\n');
+      allCss = code.pages.map(p => p.css || '').join('\n');
+    } else {
+      allHtml = code.html || '';
+      allCss = code.css || '';
+    }
+
     // Check for common issues
     
     // 1. Missing viewport meta tag
-    if (!code.html.includes('viewport')) {
+    if (!allHtml.includes('viewport')) {
       evaluation.issues.push({
         severity: 'warning',
         category: 'accessibility',
@@ -129,7 +145,7 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
     }
 
     // 2. Missing alt attributes on images
-    const imgTags = code.html.match(/<img[^>]+>/g) || [];
+    const imgTags = allHtml.match(/<img[^>]+>/g) || [];
     const missingAlt = imgTags.filter(img => !img.includes('alt='));
     if (missingAlt.length > 0) {
       evaluation.issues.push({
@@ -141,7 +157,7 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
     }
 
     // 3. Inline styles (anti-pattern)
-    const inlineStyles = code.html.match(/style=/g);
+    const inlineStyles = allHtml.match(/style=/g);
     if (inlineStyles && inlineStyles.length > 5) {
       evaluation.issues.push({
         severity: 'info',
@@ -153,7 +169,7 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
 
     // 4. No semantic HTML5 elements
     const hasSemanticHTML = /(<header|<nav|<main|<article|<section|<aside|<footer)/.test(
-      code.html
+      allHtml
     );
     if (!hasSemanticHTML) {
       evaluation.issues.push({
@@ -165,14 +181,14 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
     }
 
     // 5. Large CSS file
-    if (code.css.length > 10000) {
+    if (allCss.length > 10000) {
       evaluation.suggestions.push(
         'Consider splitting CSS into multiple files or using a CSS preprocessor for better organization'
       );
     }
 
     // 6. Check for responsive design patterns
-    const hasMediaQueries = /@media/.test(code.css);
+    const hasMediaQueries = /@media/.test(allCss);
     if (!hasMediaQueries) {
       evaluation.issues.push({
         severity: 'critical',
@@ -227,8 +243,16 @@ Provide a detailed quality evaluation with scores and actionable feedback.`;
   private getBasicEvaluation(code: GeneratedCode): QualityScore {
     const issues: QualityIssue[] = [];
 
+    // Get HTML content from either pages or legacy format
+    let htmlContent = '';
+    if (code.pages && code.pages.length > 0) {
+      htmlContent = code.pages.map(p => p.html).join('\n');
+    } else if (code.html) {
+      htmlContent = code.html;
+    }
+
     // Basic automated checks
-    if (!code.html.includes('<!DOCTYPE html>')) {
+    if (!htmlContent.includes('<!DOCTYPE html>')) {
       issues.push({
         severity: 'warning',
         category: 'code',

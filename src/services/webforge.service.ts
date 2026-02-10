@@ -63,7 +63,16 @@ export class WebForgeService {
         design,
         processedDocuments
       );
-      console.log(`Code generated: ${code.html.length} chars HTML, ${code.css.length} chars CSS`);
+      
+      // Log code generation stats based on new multi-page format
+      if (code.pages && code.pages.length > 0) {
+        const totalHtmlLength = code.pages.reduce((sum, page) => sum + page.html.length, 0);
+        const totalCssLength = code.pages.reduce((sum, page) => sum + (page.css?.length || 0), 0);
+        console.log(`Code generated: ${code.pages.length} pages, ${totalHtmlLength} chars HTML total, ${totalCssLength} chars CSS total`);
+      } else if (code.html) {
+        // Fallback for legacy single-page format
+        console.log(`Code generated: ${code.html.length} chars HTML, ${code.css?.length || 0} chars CSS`);
+      }
 
       // Step 5: Evaluate code quality
       console.log('✅ Step 5/5: Evaluating code quality...');

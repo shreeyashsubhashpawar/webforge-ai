@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import Header from '../Header';
+import RAGVisualization from '../RAGVisualization';
 import { useWizard } from '@/store/WizardContext';
 
 interface DesignStyle {
@@ -113,11 +114,12 @@ const colorPalettes: ColorPalette[] = [
 ];
 
 export default function StepDesign() {
-  const { designChoices, setDesignChoices, goToNextStep, goToPreviousStep } = useWizard();
+  const { designChoices, setDesignChoices, goToNextStep, goToPreviousStep, uploadedFiles } = useWizard();
   const [selectedStyle, setSelectedStyle] = useState<string>(designChoices?.style || 'simple');
   const [selectedPalette, setSelectedPalette] = useState<string>(
     designChoices ? colorPalettes.findIndex((p) => p.colors.primary === designChoices.primaryColor)?.toString() : '0'
   );
+  const [activeTab, setActiveTab] = useState<'design' | 'rag'>('design');
 
   const handleNext = () => {
     const palette = colorPalettes[parseInt(selectedPalette)];
@@ -138,76 +140,117 @@ export default function StepDesign() {
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold text-white mb-2">Choose Your Design</h1>
-          <p className="text-xl text-gray-400">Step 3 of 4: Select style and color palette</p>
+          <p className="text-xl text-gray-400">Step 2 of 3: Select style and color palette</p>
         </div>
 
-        {/* Design Styles */}
-        <div className="mb-12">
-          <h2 className="text-2xl font-bold text-white mb-6">Design Style</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            {designStyles.map((style) => (
-              <div
-                key={style.id}
-                onClick={() => setSelectedStyle(style.id)}
-                className={`p-6 rounded-lg cursor-pointer transition-all transform hover:scale-105 ${
-                  selectedStyle === style.id
-                    ? 'bg-blue-600 border-2 border-blue-400'
-                    : 'bg-gray-800 border-2 border-gray-700 hover:border-gray-600'
-                }`}
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <h3 className="text-white font-semibold text-lg">{style.name}</h3>
-                  {selectedStyle === style.id && <Check className="w-5 h-5 text-white" />}
-                </div>
-                <p className="text-gray-300 text-sm mb-2">{style.description}</p>
-                <p className="text-gray-400 text-xs">{style.preview}</p>
-              </div>
-            ))}
-          </div>
+        {/* Tabs */}
+        <div className="bg-gray-800/50 border border-gray-700 rounded-t-lg flex gap-4 p-4 mb-0">
+          <button
+            onClick={() => setActiveTab('design')}
+            className={`font-semibold pb-2 px-4 border-b-2 transition-colors ${
+              activeTab === 'design'
+                ? 'text-white border-blue-500'
+                : 'text-gray-400 border-transparent'
+            }`}
+          >
+            Design Choices
+          </button>
+          {uploadedFiles.length > 0 && (
+            <button
+              onClick={() => setActiveTab('rag')}
+              className={`font-semibold pb-2 px-4 border-b-2 transition-colors ${
+                activeTab === 'rag'
+                  ? 'text-white border-blue-500'
+                  : 'text-gray-400 border-transparent'
+              }`}
+            >
+              Document Processing
+            </button>
+          )}
         </div>
 
-        {/* Color Palettes */}
-        <div className="mb-12">
-          <h2 className="text-2xl font-bold text-white mb-6">Color Palette</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {colorPalettes.map((palette, index) => (
-              <div
-                key={palette.id}
-                onClick={() => setSelectedPalette(index.toString())}
-                className={`p-6 rounded-lg cursor-pointer transition-all transform hover:scale-105 border-2 ${
-                  parseInt(selectedPalette) === index
-                    ? 'border-blue-400'
-                    : 'border-gray-700 hover:border-gray-600'
-                } bg-gray-900/50`}
-              >
-                <div className="flex items-start justify-between mb-4">
-                  <h3 className="text-white font-semibold">{palette.name}</h3>
-                  {parseInt(selectedPalette) === index && <Check className="w-5 h-5 text-blue-400" />}
-                </div>
-                <div className="flex gap-3 mb-3">
+        {/* Design Tab */}
+        {activeTab === 'design' && (
+          <div className="bg-gray-800/50 border border-gray-700 border-t-0 rounded-b-lg p-8 mb-8">
+            <div className="mb-12">
+              <h2 className="text-2xl font-bold text-white mb-6">Design Style</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                {designStyles.map((style) => (
                   <div
-                    className="w-16 h-16 rounded-lg border-2 border-gray-600"
-                    style={{ backgroundColor: palette.colors.primary }}
-                    title="Primary"
-                  />
-                  <div
-                    className="w-16 h-16 rounded-lg border-2 border-gray-600"
-                    style={{ backgroundColor: palette.colors.secondary }}
-                    title="Secondary"
-                  />
-                  <div
-                    className="w-16 h-16 rounded-lg border-2 border-gray-600"
-                    style={{ backgroundColor: palette.colors.accent }}
-                    title="Accent"
-                  />
-                </div>
-                <p className="text-gray-400 text-xs">
-                  Primary • Secondary • Accent
-                </p>
+                    key={style.id}
+                    onClick={() => setSelectedStyle(style.id)}
+                    className={`p-6 rounded-lg cursor-pointer transition-all transform hover:scale-105 ${
+                      selectedStyle === style.id
+                        ? 'bg-blue-600 border-2 border-blue-400'
+                        : 'bg-gray-800 border-2 border-gray-700 hover:border-gray-600'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <h3 className="text-white font-semibold text-lg">{style.name}</h3>
+                      {selectedStyle === style.id && <Check className="w-5 h-5 text-white" />}
+                    </div>
+                    <p className="text-gray-300 text-sm mb-2">{style.description}</p>
+                    <p className="text-gray-400 text-xs">{style.preview}</p>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+
+            {/* Color Palettes */}
+            <div className="mb-12">
+              <h2 className="text-2xl font-bold text-white mb-6">Color Palette</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {colorPalettes.map((palette, index) => (
+                  <div
+                    key={palette.id}
+                    onClick={() => setSelectedPalette(index.toString())}
+                    className={`p-6 rounded-lg cursor-pointer transition-all transform hover:scale-105 border-2 ${
+                      parseInt(selectedPalette) === index
+                        ? 'border-blue-400'
+                        : 'border-gray-700 hover:border-gray-600'
+                    } bg-gray-900/50`}
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <h3 className="text-white font-semibold">{palette.name}</h3>
+                      {parseInt(selectedPalette) === index && <Check className="w-5 h-5 text-blue-400" />}
+                    </div>
+                    <div className="flex gap-3 mb-3">
+                      <div
+                        className="w-16 h-16 rounded-lg border-2 border-gray-600"
+                        style={{ backgroundColor: palette.colors.primary }}
+                        title="Primary"
+                      />
+                      <div
+                        className="w-16 h-16 rounded-lg border-2 border-gray-600"
+                        style={{ backgroundColor: palette.colors.secondary }}
+                        title="Secondary"
+                      />
+                      <div
+                        className="w-16 h-16 rounded-lg border-2 border-gray-600"
+                        style={{ backgroundColor: palette.colors.accent }}
+                        title="Accent"
+                      />
+                    </div>
+                    <p className="text-gray-400 text-xs">
+                      Primary • Secondary • Accent
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* RAG Tab */}
+        {activeTab === 'rag' && (
+          <div className="bg-gray-800/50 border border-gray-700 border-t-0 rounded-b-lg p-8 mb-8">
+            <h2 className="text-2xl font-bold text-white mb-6">Document Processing & RAG Analysis</h2>
+            <p className="text-gray-400 mb-6">
+              Your uploaded documents are being processed for Retrieval-Augmented Generation (RAG). This allows Claude to reference your specific content when generating the website.
+            </p>
+            <RAGVisualization documents={uploadedFiles} isProcessing={false} />
+          </div>
+        )}
 
         {/* Navigation */}
         <div className="flex justify-between items-center">

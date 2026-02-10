@@ -77,13 +77,25 @@ export interface DocumentChunk {
   metadata?: Record<string, any>;
 }
 
-export interface GeneratedCode {
+export interface WebPage {
+  id: string;
+  name: string;
+  title: string;
   html: string;
-  css: string;
-  javascript: string;
+  css?: string;
+  javascript?: string;
+  route?: string; // URL path for this page
+}
+
+export interface GeneratedCode {
+  pages: WebPage[];
   framework?: 'react' | 'vanilla';
   dependencies?: string[];
   preview?: string;
+  // Legacy support
+  html?: string;
+  css?: string;
+  javascript?: string;
 }
 
 export interface QualityScore {
