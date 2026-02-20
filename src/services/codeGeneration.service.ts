@@ -3,6 +3,8 @@ import {
   IntentClassification,
   DesignRecommendation,
   GeneratedCode,
+  GeneratedFile,
+  GeneratedWebsite,
   ProcessedDocument,
   WebPage,
 } from '@/types';
@@ -16,7 +18,7 @@ Your response MUST follow this exact format with NO deviations:
 
 ===PAGE_NAME:page_name_here===
 ===HTML===
-[Complete HTML for this page - include <html>, <head>, <body> tags. Do NOT reference external stylesheets - inline or embed all CSS]
+[Complete HTML body content for this page - include semantic HTML structure. Do NOT include <style> tags - CSS is provided separately]
 ===END HTML===
 
 ===CSS===
@@ -52,14 +54,15 @@ IMPORTANT GUIDELINES:
 6. Follow web accessibility standards (WCAG 2.1) with proper ARIA labels
 7. Write clean, well-commented code
 8. Ensure full functionality without external CDN dependencies
-9. Include navigation links between pages using proper href="#/page-name" or page-id patterns
+9. Include navigation links between pages using proper href links
 10. Make the site fully self-contained with all assets embedded or inline
 
 EXAMPLE OUTPUT STRUCTURE FOR 2 PAGES:
 ===PAGE_NAME:home===
 ===HTML===
-<!DOCTYPE html>
-...full home page HTML...
+<!-- Home page content here -->
+<h1>Welcome</h1>
+...full home page HTML body...
 ===END HTML===
 ===CSS===
 ...full home page CSS with media queries...
@@ -71,8 +74,9 @@ EXAMPLE OUTPUT STRUCTURE FOR 2 PAGES:
 
 ===PAGE_NAME:about===
 ===HTML===
-<!DOCTYPE html>
-...full about page HTML...
+<!-- About page content here -->
+<h1>About Us</h1>
+...full about page HTML body...
 ===END HTML===
 ===CSS===
 ...full about page CSS...
@@ -211,7 +215,7 @@ Generate the COMPLETE multi-page website code now. Make it pixel-perfect and pro
   }
 
   /**
-   * Parse the generated code from Claude's response (multi-page format)
+   * Parse the generated code from Claude's response (multi-page format with separate files)
    */
   private parseGeneratedCode(response: string): GeneratedCode {
     const pages = this.extractPages(response);
@@ -224,15 +228,131 @@ Generate the COMPLETE multi-page website code now. Make it pixel-perfect and pro
       throw new Error('Failed to extract HTML from generated code');
     }
 
+    // Convert pages to new file-based format
+    const files: Array<{ name: string; type: 'html' | 'css' | 'javascript'; content: string; path: string }> = [];
+    const cssContents: string[] = [];
+    const jsContents: string[] = [];
+
+    // Add HTML files for each page
+    pages.forEach(page => {
+      files.push({
+        name: `${page.id}.html`,
+        type: 'html',
+        content: this.createFullHtmlFile(page, pages),
+        path: `/pages/${page.id}.html`,
+      });
+
+      if (page.css) cssContents.push(page.css);
+      if (page.javascript) jsContents.push(page.javascript);
+    });
+
+    // Add separate CSS file if there's styling
+    if (cssContents.length > 0) {
+      files.push({
+        name: 'styles.css',
+        type: 'css',
+        content: this.combineAndOrganizeCSS(cssContents),
+        path: '/styles.css',
+      });
+    }
+
+    // Add separate JavaScript file if there's interactivity
+    if (jsContents.length > 0) {
+      files.push({
+        name: 'script.js',
+        type: 'javascript',
+        content: this.combineAndOrganizeJS(jsContents),
+        path: '/script.js',
+      });
+    }
+
+    // Create the GeneratedWebsite structure
+    const website = {
+      files,
+      mainFile: 'pages/index.html',
+      framework: 'vanilla',
+    };
+
     return {
-      pages,
+      pages, // Keep for backward compatibility
+      website, // New structured format
       framework: 'vanilla',
       dependencies: this.extractDependencies(
         pages.map(p => p.html).join('\n'),
-        pages.map(p => p.css || '').join('\n'),
-        pages.map(p => p.javascript || '').join('\n')
+        cssContents.join('\n'),
+        jsContents.join('\n')
       ),
     };
+  }
+
+  /**
+   * Create a complete HTML file with proper links to external CSS/JS
+   */
+  private createFullHtmlFile(page: WebPage, allPages: WebPage[]): string {
+    // Extract the body content from the page
+    const bodyMatch = page.html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    const bodyContent = bodyMatch ? bodyMatch[1] : page.html;
+
+    // Create navigation links to other pages
+    const navLinks = allPages
+      .map(p => `      <a href="${p.id}.html" class="nav-link">${p.name}</a>`)
+      .join('\n');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${page.title}</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <nav class="main-nav">
+${navLinks}
+    </nav>
+
+${bodyContent}
+
+    <script src="/script.js"><\/script>
+</body>
+</html>`;
+  }
+
+  /**
+   * Combine and organize CSS from multiple pages
+   */
+  private combineAndOrganizeCSS(cssContents: string[]): string {
+    return `/* Generated Styles */
+/* Combined from all pages */
+
+:root {
+  --transition-duration: 0.3s;
+  --border-radius: 8px;
+}
+
+${cssContents.join('\n\n/* ===== */\n\n')}`;
+  }
+
+  /**
+   * Combine and organize JavaScript from multiple pages
+   */
+  private combineAndOrganizeJS(jsContents: string[]): string {
+    return `// Generated Script
+// Combined from all pages
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  initializePageScripts();
+});
+
+function initializePageScripts() {
+  ${jsContents.map((js, i) => `// Page ${i + 1} scripts\n  (function() {\n    ${js.split('\n').join('\n    ')}\n  })();`).join('\n\n  ')}
+}
+
+// Utility functions
+function navigateToPage(pageId) {
+  window.location.href = pageId + '.html';
+}`;
   }
 
   /**

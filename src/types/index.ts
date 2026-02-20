@@ -87,11 +87,27 @@ export interface WebPage {
   route?: string; // URL path for this page
 }
 
+export interface GeneratedFile {
+  name: string; // e.g., 'index.html', 'styles.css', 'script.js'
+  type: 'html' | 'css' | 'javascript' | 'json';
+  content: string;
+  path?: string; // e.g., 'index.html', 'pages/about.html'
+}
+
+export interface GeneratedWebsite {
+  files: GeneratedFile[];
+  mainFile: string; // e.g., 'index.html'
+  framework?: 'react' | 'vanilla';
+  dependencies?: string[];
+}
+
 export interface GeneratedCode {
   pages: WebPage[];
   framework?: 'react' | 'vanilla';
   dependencies?: string[];
   preview?: string;
+  // New structured file format
+  website?: GeneratedWebsite;
   // Legacy support
   html?: string;
   css?: string;
