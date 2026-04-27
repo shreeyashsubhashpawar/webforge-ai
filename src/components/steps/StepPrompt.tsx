@@ -39,7 +39,7 @@ export default function StepPrompt() {
             Build Your Website with Web Forge AI
           </h1>
           <p className="text-xl text-gray-400">
-            Step 1 of 4: Describe your vision and upload files
+            Step 1 of 5: Describe your vision and upload reference files
           </p>
         </div>
 
@@ -71,8 +71,11 @@ export default function StepPrompt() {
                 <Upload className="w-4 h-4" />
                 Reference Files (Optional)
               </label>
-              <p className="text-xs text-gray-400 mb-4">
-                Upload documents, images, or references to guide design
+              <p className="text-xs text-gray-400 mb-2">
+                Upload PDFs with business info, images, descriptions
+              </p>
+              <p className="text-xs text-blue-400 bg-blue-950 rounded px-2 py-1 mb-4">
+                💡 PDFs will be processed through RAG for intelligent context
               </p>
             </div>
             

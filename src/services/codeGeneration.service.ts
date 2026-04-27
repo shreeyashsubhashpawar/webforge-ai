@@ -89,18 +89,29 @@ EXAMPLE OUTPUT STRUCTURE FOR 2 PAGES:
 export class CodeGenerationService {
   /**
    * Generate complete website code based on all inputs
+   * @param intent - The classified user intent
+   * @param design - Design recommendations
+   * @param documents - Optional: Processed documents for context
+   * @param augmentedPrompt - Optional: RAG-augmented prompt with retrieved context
    */
   async generateWebsite(
     intent: IntentClassification,
     design: DesignRecommendation,
-    documents?: ProcessedDocument[]
+    documents?: ProcessedDocument[],
+    augmentedPrompt?: string
   ): Promise<GeneratedCode> {
     try {
       // Build the context from documents
-      const documentContext = this.buildDocumentContext(documents);
+      const documentContext = augmentedPrompt
+        ? '' // If augmented prompt is provided, use it directly instead of document context
+        : this.buildDocumentContext(documents);
 
       // Create the generation prompt
-      const prompt = this.buildGenerationPrompt(intent, design, documentContext);
+      const prompt = augmentedPrompt || this.buildGenerationPrompt(intent, design, documentContext);
+
+      console.log(
+        `[CodeGen] Generating website with ${augmentedPrompt ? 'RAG-augmented' : 'standard'} prompt`
+      );
 
       // Call Claude to generate code
       const response = await claudeService.sendMessage(
@@ -267,7 +278,7 @@ Generate the COMPLETE multi-page website code now. Make it pixel-perfect and pro
     }
 
     // Create the GeneratedWebsite structure
-    const website = {
+    const website: GeneratedWebsite = {
       files,
       mainFile: 'pages/index.html',
       framework: 'vanilla',
@@ -560,14 +571,21 @@ function navigateToPage(pageId) {
     currentCode: GeneratedCode,
     feedback: string
   ): Promise<GeneratedCode> {
+    const htmlSnippet = currentCode.html?.substring(0, 1000) || 'No HTML available';
+    const cssSnippet = currentCode.css?.substring(0, 1000) || 'No CSS available';
+    const jsSnippet = currentCode.javascript?.substring(0, 1000) || 'No JavaScript available';
+
     const prompt = `I have generated website code, but the user wants changes.
 
 CURRENT CODE:
 HTML:
-${currentCode.html.substring(0, 1000)}...
+${htmlSnippet}...
 
 CSS:
-${currentCode.css.substring(0, 1000)}...
+${cssSnippet}...
+
+JavaScript:
+${jsSnippet}...
 
 USER FEEDBACK: "${feedback}"
 

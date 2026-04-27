@@ -1,16 +1,23 @@
-import { GenerationRequest, GenerationResponse, ProcessedDocument } from '@/types';
+import {
+  GenerationRequest,
+  GenerationResponse,
+  ProcessedDocument,
+  RAGContextData,
+  GeneratedCode,
+} from '@/types';
 import { intentClassificationService } from './intentClassification.service';
 import { designRecommendationService } from './designRecommendation.service';
 import { documentProcessingService } from './documentProcessing.service';
 import { codeGenerationService } from './codeGeneration.service';
 import { qualityScoringService } from './qualityScoring.service';
+import { ragPipelineService } from './rag/ragPipeline.service';
 
 /**
  * Main orchestration service that coordinates the entire WebForge AI pipeline
  */
 export class WebForgeService {
   /**
-   * Execute the complete WebForge AI pipeline
+   * Execute the complete WebForge AI pipeline with optional RAG context
    */
   async generateWebsite(request: GenerationRequest): Promise<GenerationResponse> {
     const startTime = Date.now();
@@ -18,35 +25,54 @@ export class WebForgeService {
     try {
       console.log('🚀 Starting WebForge AI generation pipeline...');
 
-      // Step 1: Process uploaded documents (if any)
-      console.log('📄 Step 1/5: Processing uploaded documents...');
-      let processedDocuments: ProcessedDocument[] = [];
-      
-      if (request.documents && request.documents.length > 0) {
-        // In a real implementation, you would load the actual file buffers
-        // For now, we'll skip this step in the service
-        console.log(`Found ${request.documents.length} documents to process`);
+      // Step 1: Retrieve RAG context if provided
+      let ragContext: RAGContextData | undefined;
+      let augmentedPrompt = request.prompt;
+      let ragRetrievalResult;
+
+      if (request.ragContextId) {
+        console.log('📚 Step 1/6: Retrieving RAG context...');
+        try {
+          ragContext = ragPipelineService.getRAGContext(request.ragContextId);
+
+          if (ragContext) {
+            console.log(
+              `RAG context found: ${ragContext.metadata.totalChunks} chunks, ${ragContext.imageIds.length} images`
+            );
+
+            // Retrieve relevant chunks for the prompt
+            ragRetrievalResult = await ragPipelineService.retrieveContext(
+              request.ragContextId,
+              request.prompt
+            );
+
+            console.log(
+              `Retrieved ${ragRetrievalResult.chunks.length} relevant chunks for augmentation`
+            );
+
+            // Build augmented prompt
+            augmentedPrompt = ragPipelineService.buildAugmentedPrompt(
+              request.prompt,
+              ragRetrievalResult.context,
+              ragRetrievalResult.images
+            );
+
+            console.log('✓ Prompt augmented with RAG context');
+          }
+        } catch (ragError) {
+          console.warn('⚠ RAG context retrieval failed, continuing without RAG:', ragError);
+        }
+      } else {
+        console.log('📄 Step 1/6: Processing uploaded documents...');
       }
 
-      // Step 2: Classify user intent
-      console.log('🎯 Step 2/5: Classifying user intent...');
-      const intent = await intentClassificationService.classifyIntent(request.prompt);
+      // Step 2: Classify user intent (using augmented prompt if available)
+      console.log('🎯 Step 2/6: Classifying user intent...');
+      const intent = await intentClassificationService.classifyIntent(augmentedPrompt);
       console.log(`Intent identified: ${intent.primaryIntent} (${(intent.confidence * 100).toFixed(0)}% confidence)`);
 
-      // Refine intent with document context if available
-      if (processedDocuments.length > 0) {
-        const docSummary = processedDocuments
-          .map(d => d.text.substring(0, 500))
-          .join('\n\n');
-        const refinedIntent = await intentClassificationService.refineIntentWithDocuments(
-          intent,
-          docSummary
-        );
-        console.log('Intent refined with document context');
-      }
-
       // Step 3: Generate design recommendations
-      console.log('🎨 Step 3/5: Generating design recommendations...');
+      console.log('🎨 Step 3/6: Generating design recommendations...');
       const design = await designRecommendationService.generateDesignRecommendations(intent);
       console.log(`Design system created with ${design.components.length} components`);
 
@@ -56,29 +82,36 @@ export class WebForgeService {
         console.log('Applied user design preferences');
       }
 
-      // Step 4: Generate website code
-      console.log('💻 Step 4/5: Generating website code...');
+      // Step 4: Generate website code (Claude/Anthropic API)
+      console.log('💻 Step 4/6: Generating website code with Claude...');
       const code = await codeGenerationService.generateWebsite(
         intent,
         design,
-        processedDocuments
+        [],
+        augmentedPrompt // Pass augmented prompt for better code generation
       );
-      
+
       // Log code generation stats based on new multi-page format
       if (code.pages && code.pages.length > 0) {
         const totalHtmlLength = code.pages.reduce((sum, page) => sum + page.html.length, 0);
         const totalCssLength = code.pages.reduce((sum, page) => sum + (page.css?.length || 0), 0);
-        console.log(`Code generated: ${code.pages.length} pages, ${totalHtmlLength} chars HTML total, ${totalCssLength} chars CSS total`);
+        console.log(
+          `Code generated: ${code.pages.length} pages, ${totalHtmlLength} chars HTML total, ${totalCssLength} chars CSS total`
+        );
       } else if (code.html) {
         // Fallback for legacy single-page format
-        console.log(`Code generated: ${code.html.length} chars HTML, ${code.css?.length || 0} chars CSS`);
+        console.log(
+          `Code generated: ${code.html.length} chars HTML, ${code.css?.length || 0} chars CSS`
+        );
       }
 
       // Step 5: Evaluate code quality
-      console.log('✅ Step 5/5: Evaluating code quality...');
+      console.log('✅ Step 5/6: Evaluating code quality...');
       const quality = await qualityScoringService.evaluateCode(code);
       console.log(`Quality score: ${quality.overall}/100`);
 
+      // Step 6: Prepare response
+      console.log('📦 Step 6/6: Preparing response...');
       const processingTime = Date.now() - startTime;
       console.log(`✨ Pipeline completed in ${(processingTime / 1000).toFixed(2)}s`);
 
@@ -88,11 +121,13 @@ export class WebForgeService {
         design,
         code,
         quality,
+        ragContext,
+        augmentedPrompt: request.ragContextId ? augmentedPrompt : undefined,
         processingTime,
       };
     } catch (error) {
       console.error('❌ Error in WebForge pipeline:', error);
-      
+
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred',
@@ -142,7 +177,8 @@ export class WebForgeService {
         };
       }
 
-      const code = {
+      const code: GeneratedCode = {
+        pages: [], // Empty array for compatibility
         html: htmlBuffer,
         css: cssBuffer,
         javascript: jsBuffer,

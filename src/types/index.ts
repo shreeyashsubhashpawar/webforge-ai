@@ -50,6 +50,99 @@ export interface ComponentRecommendation {
   priority: number;
 }
 
+// ============ RAG Pipeline Types ============
+
+export interface ExtractedImage {
+  id: string;
+  pageNumber: number;
+  base64?: string;
+  localPath?: string;
+  metadata: {
+    width?: number;
+    height?: number;
+    extractedAt: Date;
+  };
+}
+
+export interface ExtractedPageContent {
+  pageNumber: number;
+  text: string;
+  images: ExtractedImage[];
+  metadata?: Record<string, any>;
+}
+
+export interface ExtractedPDFContent {
+  id: string;
+  fileName: string;
+  pages: ExtractedPageContent[];
+  metadata: {
+    totalPages: number;
+    totalImages: number;
+    extractedAt: Date;
+    fileSize: number;
+  };
+}
+
+export interface RAGChunkMetadata {
+  pageNumber: number;
+  chunkIndex: number;
+  relatedImages?: string[];
+  section?: string;
+  wordCount: number;
+}
+
+export interface RAGChunk {
+  id: string;
+  text: string;
+  metadata: RAGChunkMetadata;
+  embedding?: number[];
+}
+
+export interface RAGChunkedDocument {
+  id: string;
+  originalName: string;
+  chunks: RAGChunk[];
+  imageIds: string[];
+  metadata: {
+    totalChunks: number;
+    totalWordCount: number;
+    chunkSize: number;
+    overlapSize: number;
+  };
+}
+
+export interface RAGVectorIndex {
+  chunkId: string;
+  embedding: number[];
+  text: string;
+  documentId: string;
+  pageNumber: number;
+  chunkIndex: number;
+  relatedImages?: string[];
+}
+
+export interface RAGContextData {
+  id: string;
+  documentId: string;
+  documentName: string;
+  chunks: RAGChunk[];
+  vectorIndex: RAGVectorIndex[];
+  imageIds: string[];
+  metadata: {
+    createdAt: Date;
+    totalChunks: number;
+    totalWords: number;
+  };
+}
+
+export interface RAGRetrievalResult {
+  chunks: RAGChunk[];
+  similarity: number[];
+  images: string[];
+  context: string;
+}
+
+// Legacy/Alternative interface for backward compatibility
 export interface RAGContext {
   documents: ProcessedDocument[];
   relevantChunks: DocumentChunk[];
@@ -139,6 +232,7 @@ export interface QualityIssue {
 export interface GenerationRequest {
   prompt: string;
   documents?: UploadedDocument[];
+  ragContextId?: string; // ID of processed RAG context
   designPreferences?: Partial<DesignRecommendation>;
   constraints?: {
     maxFileSize?: number;
@@ -153,6 +247,8 @@ export interface GenerationResponse {
   design?: DesignRecommendation;
   code?: GeneratedCode;
   quality?: QualityScore;
+  ragContext?: RAGContextData; // Processed RAG context if available
+  augmentedPrompt?: string; // Enhanced prompt with RAG context
   error?: string;
   processingTime?: number;
 }

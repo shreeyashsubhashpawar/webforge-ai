@@ -1,9 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, useState } from 'react';
-import { UploadedDocument, GenerationResponse } from '@/types';
+import { UploadedDocument, GenerationResponse, RAGContextData } from '@/types';
 
-export type WizardStep = 'prompt' | 'design' | 'preview';
+export type WizardStep = 'prompt' | 'upload' | 'rag' | 'design' | 'preview';
 
 interface DesignChoices {
   style: 'simple' | 'techie' | 'corporate' | 'creative' | 'playful';
@@ -16,6 +16,8 @@ interface WizardContextType {
   currentStep: WizardStep;
   prompt: string;
   uploadedFiles: UploadedDocument[];
+  ragContext: RAGContextData | null;
+  ragContextId: string | null;
   designChoices: DesignChoices | null;
   generationResult: GenerationResponse | null;
   isGenerating: boolean;
@@ -26,6 +28,8 @@ interface WizardContextType {
   setUploadedFiles: (files: UploadedDocument[]) => void;
   addUploadedFile: (file: UploadedDocument) => void;
   removeUploadedFile: (fileId: string) => void;
+  setRAGContext: (context: RAGContextData, contextId: string) => void;
+  clearRAGContext: () => void;
   setDesignChoices: (choices: DesignChoices) => void;
   setGenerationResult: (result: GenerationResponse | null) => void;
   setIsGenerating: (isGenerating: boolean) => void;
@@ -40,11 +44,13 @@ export const WizardProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [currentStep, setCurrentStep] = useState<WizardStep>('prompt');
   const [prompt, setPrompt] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedDocument[]>([]);
+  const [ragContext, setRAGContextState] = useState<RAGContextData | null>(null);
+  const [ragContextId, setRAGContextId] = useState<string | null>(null);
   const [designChoices, setDesignChoices] = useState<DesignChoices | null>(null);
   const [generationResult, setGenerationResult] = useState<GenerationResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const stepOrder: WizardStep[] = ['prompt', 'design', 'preview'];
+  const stepOrder: WizardStep[] = ['prompt', 'upload', 'rag', 'design', 'preview'];
   const currentStepIndex = stepOrder.indexOf(currentStep);
 
   const goToNextStep = () => {
@@ -67,10 +73,22 @@ export const WizardProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setUploadedFiles(uploadedFiles.filter(f => f.id !== fileId));
   };
 
+  const setRAGContext = (context: RAGContextData, contextId: string) => {
+    setRAGContextState(context);
+    setRAGContextId(contextId);
+  };
+
+  const clearRAGContext = () => {
+    setRAGContextState(null);
+    setRAGContextId(null);
+  };
+
   const reset = () => {
     setCurrentStep('prompt');
     setPrompt('');
     setUploadedFiles([]);
+    setRAGContextState(null);
+    setRAGContextId(null);
     setDesignChoices(null);
     setGenerationResult(null);
     setIsGenerating(false);
@@ -80,6 +98,8 @@ export const WizardProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     currentStep,
     prompt,
     uploadedFiles,
+    ragContext,
+    ragContextId,
     designChoices,
     generationResult,
     isGenerating,
@@ -89,6 +109,8 @@ export const WizardProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setUploadedFiles,
     addUploadedFile,
     removeUploadedFile,
+    setRAGContext,
+    clearRAGContext,
     setDesignChoices,
     setGenerationResult,
     setIsGenerating,
