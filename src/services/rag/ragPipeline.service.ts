@@ -37,12 +37,12 @@ export interface RetrievalResult {
 export class RAGPipelineService {
   private ragContexts: Map<string, RAGContext> = new Map();
   private topK: number;
-  // ✅ FIX: Lower threshold so chunks actually pass — nomic-embed-text
-  // rarely scores above 0.4 with short queries. 0.0 = return all, rely on topK.
   private similarityThreshold: number;
 
   constructor(
-    topK: number = parseInt(process.env.RAG_TOP_K_RETRIEVAL || '10', 10),
+    topK: number = parseInt(process.env.RAG_TOP_K_RETRIEVAL || '50', 10),
+    // ✅ threshold=0.0 → return ALL chunks. nomic-embed-text similarity scores
+    // are too low with short queries to use any positive threshold reliably.
     similarityThreshold: number = parseFloat(process.env.RAG_SIMILARITY_THRESHOLD || '0.0')
   ) {
     this.topK = topK;
@@ -67,12 +67,12 @@ export class RAGPipelineService {
         }
       }
 
-      // Build fullText using === PAGE N === format — matches chunking.ts splitter regex
       const fullText = pdfContent.pages
         .map((p) => `=== PAGE ${p.pageNumber} ===\n${p.text}`)
         .join('\n\n');
 
-      console.log(`[RAG Pipeline] Chunking document... (${fullText.length} chars, ${pdfContent.pages.length} pages)`);
+      console.log(`[RAG Pipeline] Full text length: ${fullText.length} chars`);
+      console.log(`[RAG Pipeline] First 500 chars of fullText: ${fullText.substring(0, 500)}`);
 
       const chunkedDoc = chunkingService.chunkDocument(
         pdfContent.id,
@@ -87,7 +87,6 @@ export class RAGPipelineService {
         throw new Error('No text chunks produced — PDF may have no extractable text.');
       }
 
-      console.log(`[RAG Pipeline] Generating embeddings for ${chunkedDoc.chunks.length} chunks...`);
       const embeddings = await this.generateEmbeddingsForChunks(chunkedDoc.chunks);
 
       const vectorIndex: VectorIndex[] = chunkedDoc.chunks.map((chunk, index) => ({
@@ -119,6 +118,7 @@ export class RAGPipelineService {
       };
 
       this.ragContexts.set(ragId, ragContext);
+      console.log(`[RAG Pipeline] Stored context with ID: ${ragId}`);
       console.log(`[RAG Pipeline] Done: ${ragContext.chunks.length} chunks indexed`);
 
       return ragContext;
@@ -143,42 +143,44 @@ export class RAGPipelineService {
   async retrieveContext(ragContextId: string, query: string): Promise<RetrievalResult> {
     try {
       const ragContext = this.ragContexts.get(ragContextId);
-      if (!ragContext) throw new Error(`RAG context not found: ${ragContextId}`);
+      if (!ragContext) {
+        console.error(`[RAG Pipeline] Context not found for ID: ${ragContextId}`);
+        console.error(`[RAG Pipeline] Available IDs: ${Array.from(this.ragContexts.keys()).join(', ')}`);
+        throw new Error(`RAG context not found: ${ragContextId}`);
+      }
 
-      console.log(`[RAG Pipeline] Retrieving context for: "${query.substring(0, 60)}"`);
+      console.log(`[RAG Pipeline] Found context: ${ragContext.chunks.length} chunks`);
 
       // ─────────────────────────────────────────────────────────────────────
-      // STRATEGY: For website generation, we want ALL document content,
-      // not just semantically similar chunks. Department names, phone numbers,
-      // addresses, achievements — all of it matters regardless of query.
-      //
-      // So we: (1) try cosine similarity retrieval, (2) if too few chunks
-      // pass, fall back to returning ALL chunks sorted by page order.
-      // This guarantees PDF content always reaches Claude.
+      // STRATEGY: Always return ALL chunks for website generation.
+      // Website content needs ALL information from the document:
+      // department name, HOD name, phone, address, achievements, programs —
+      // ALL of it matters. We don't filter by semantic relevance here.
       // ─────────────────────────────────────────────────────────────────────
-
-      let selected: (VectorIndex & { similarity: number })[] = [];
+      let selected: (VectorIndex & { similarity: number })[];
 
       try {
         const queryEmbedding = await ollamaService.generateEmbedding(query);
-        const similarities = ragContext.vectorIndex.map((item) => ({
+        const withScores = ragContext.vectorIndex.map((item) => ({
           ...item,
           similarity: ollamaService.cosineSimilarity(queryEmbedding, item.embedding),
         }));
 
-        selected = similarities
+        // Sort by similarity but take ALL chunks (topK=50 by default covers everything)
+        selected = withScores
           .sort((a, b) => b.similarity - a.similarity)
           .filter((item) => item.similarity >= this.similarityThreshold)
           .slice(0, this.topK);
 
-        console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks (threshold: ${this.similarityThreshold})`);
+        console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks`);
       } catch (embErr) {
-        console.warn('[RAG Pipeline] Embedding failed, using all chunks:', embErr);
+        console.warn('[RAG Pipeline] Embedding query failed, using all chunks:', embErr);
+        selected = [];
       }
 
-      // Fallback: if no chunks retrieved, use ALL chunks sorted by page
+      // Always fallback to all chunks if selection is empty
       if (selected.length === 0) {
-        console.log('[RAG Pipeline] Fallback: returning all chunks sorted by page');
+        console.log('[RAG Pipeline] Using all chunks (fallback)');
         selected = ragContext.vectorIndex
           .map((item) => ({ ...item, similarity: 1.0 }))
           .sort((a, b) => a.pageNumber - b.pageNumber || a.chunkIndex - b.chunkIndex);
@@ -195,13 +197,15 @@ export class RAGPipelineService {
         if (chunk) retrievedChunks.push(chunk);
       }
 
-      console.log(`[RAG Pipeline] Final context: ${selected.length} chunks, ~${contextLines.join('\n\n').length} chars`);
+      const fullContext = contextLines.join('\n\n');
+      console.log(`[RAG Pipeline] Context assembled: ${selected.length} chunks, ${fullContext.length} chars`);
+      console.log(`[RAG Pipeline] Context preview: ${fullContext.substring(0, 400)}`);
 
       return {
         chunks: retrievedChunks,
         similarity: selected.map((i) => i.similarity),
         images: Array.from(relatedImages),
-        context: contextLines.join('\n\n'),
+        context: fullContext,
       };
     } catch (error) {
       console.error('[RAG Pipeline] Error retrieving context:', error);
@@ -209,56 +213,71 @@ export class RAGPipelineService {
     }
   }
 
-  /**
-   * Build the augmented prompt that Claude will receive.
-   *
-   * ✅ FIX: The original prompt was too generic. It didn't tell Claude to
-   * extract and display specific data (names, phone numbers, achievements,
-   * addresses). Now it explicitly instructs Claude to use every piece of
-   * information from the document as actual website content.
-   */
+  // ─────────────────────────────────────────────────────────────────────────
+  // buildAugmentedPrompt
+  //
+  // This is what Claude actually receives as the user message.
+  // It must:
+  //   1. Present the full PDF text prominently at the top
+  //   2. Give very explicit instructions to use real data
+  //   3. Match the output format expected by codeGeneration.service.ts parser
+  //      (===PAGE_NAME:xxx=== / ===HTML=== / ===END HTML=== / ===END PAGE===)
+  // ─────────────────────────────────────────────────────────────────────────
   buildAugmentedPrompt(originalPrompt: string, ragContext: string, images: string[]): string {
-    let augmented = '';
-
-    augmented += `You are an expert web developer. Your job is to build a complete, real website using the ACTUAL CONTENT extracted from the uploaded PDF document below.\n\n`;
-
-    if (ragContext && ragContext.trim().length > 0) {
-      augmented += `════════════════════════════════════════════════
-DOCUMENT CONTENT (extracted from uploaded PDF)
-════════════════════════════════════════════════
+    const contextSection = ragContext && ragContext.trim().length > 0
+      ? `════════════════════════════════════════════════════════
+COMPLETE CONTENT EXTRACTED FROM UPLOADED PDF DOCUMENT:
+════════════════════════════════════════════════════════
 ${ragContext}
-════════════════════════════════════════════════\n\n`;
-    }
+════════════════════════════════════════════════════════
 
-    augmented += `USER'S WEBSITE REQUEST:\n${originalPrompt}\n\n`;
+`
+      : '';
 
-    augmented += `════════════════════════════════════════════════
-CRITICAL INSTRUCTIONS — YOU MUST FOLLOW ALL OF THESE:
-════════════════════════════════════════════════
+    return `${contextSection}USER REQUEST: ${originalPrompt}
 
-1. USE REAL DATA FROM THE DOCUMENT:
-   - Extract and display ALL actual names, phone numbers, email addresses, physical addresses
-   - Show ALL real achievements, milestones, and accomplishments from the document
-   - Include ALL department names, faculty names, HOD/PD names mentioned
-   - Display ALL programs, courses, activities listed
-   - Show ALL statistics, years, numbers mentioned in the document
-   - DO NOT invent placeholder data (e.g. "John Doe", "+91 XXXXXXXXXX", "lorem ipsum")
-   - Every section of the website MUST contain real content from the document
+════════════════════════════════════════════════════════
+MANDATORY INSTRUCTIONS — VIOLATION IS NOT ACCEPTABLE:
+════════════════════════════════════════════════════════
 
-2. WEBSITE STRUCTURE:
-   - Create multiple pages: Home, About, Achievements, Faculty/Team, Contact, etc.
-   - The hero/header section MUST show the real organization/department name from the document
-   - Contact page MUST show the actual phone, email, address from the document
-   - About page MUST describe the real department/organization using document content
+YOU MUST USE THE REAL DATA FROM THE PDF ABOVE:
+• Every person's name mentioned → display it in the website
+• Every phone number → show it on the Contact page
+• Every email address → show it on the Contact page  
+• Every physical address → show it on the Contact page
+• Every achievement/award → list it on an Achievements page
+• Every program/course/activity → list it
+• The organization/department name → use it in <h1> and <title>
+• Head of Department / Principal / Director name → show in hero section
+• DO NOT write "Lorem ipsum", "Name Here", "+91 XXXXXXXXXX", or any placeholder
+• Every single section must contain REAL text from the PDF above
 
-3. DESIGN:
-   - Professional, modern design appropriate to the organization type
-   - Fully responsive (mobile + desktop)
-   - Consistent navigation across all pages
+PAGES TO GENERATE (minimum 4):
+1. home — hero with org name, tagline, key highlights
+2. about — detailed description from document content
+3. achievements — ALL achievements, awards, milestones from document
+4. contact — REAL phone, email, address from document
 
-Now generate the complete website using the document content above.\n`;
+OUTPUT FORMAT (follow exactly):
 
-    return augmented;
+===PAGE_NAME:home===
+===HTML===
+[Complete standalone HTML page with embedded <style> tags]
+===END HTML===
+===END PAGE===
+
+===PAGE_NAME:about===
+===HTML===
+[Complete standalone HTML page with embedded <style> tags]
+===END HTML===
+===END PAGE===
+
+[continue for each page]
+
+NAVIGATION: Each page must have a nav bar. For preview navigation use:
+onclick="parent.switchPage('pageid')" on nav links.
+
+Generate the complete website now using the PDF content above.`;
   }
 
   getRAGContext(ragContextId: string): RAGContext | undefined {
@@ -275,7 +294,6 @@ Now generate the complete website using the document content above.\n`;
 
   clearAllContexts(): void {
     this.ragContexts.clear();
-    console.log('[RAG Pipeline] Cleared all RAG contexts');
   }
 
   getStats() {
