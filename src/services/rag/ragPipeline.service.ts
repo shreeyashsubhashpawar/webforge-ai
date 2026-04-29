@@ -40,58 +40,53 @@ export class RAGPipelineService {
   private similarityThreshold: number;
 
   constructor(
-    topK: number = parseInt(process.env.RAG_TOP_K_RETRIEVAL || '50', 10),
-    // ✅ threshold=0.0 → return ALL chunks. nomic-embed-text similarity scores
-    // are too low with short queries to use any positive threshold reliably.
+    topK: number = parseInt(process.env.RAG_TOP_K_RETRIEVAL || '100', 10),
     similarityThreshold: number = parseFloat(process.env.RAG_SIMILARITY_THRESHOLD || '0.0')
   ) {
     this.topK = topK;
     this.similarityThreshold = similarityThreshold;
-    console.log(`[RAG Pipeline] Initialized with topK=${topK}, threshold=${similarityThreshold}`);
+    console.log(`[RAG Pipeline] Initialized: topK=${topK}, threshold=${similarityThreshold}`);
   }
 
-  async processPDFContent(
-    pdfContent: ExtractedPDFContent,
-    imageMap?: Map<number, string[]>
-  ): Promise<RAGContext> {
+  async processPDFContent(pdfContent: ExtractedPDFContent): Promise<RAGContext> {
     try {
-      console.log(`[RAG Pipeline] Processing PDF: ${pdfContent.fileName}`);
+      console.log(`[RAG Pipeline] Processing: ${pdfContent.fileName}`);
       const ragId = uuidv4();
-      const documentName = pdfContent.fileName;
 
-      const pageImageMap = new Map<number, string[]>();
-      for (const page of pdfContent.pages) {
-        const imageIds = page.images.map((img) => img.id);
-        if (imageIds.length > 0) {
-          pageImageMap.set(page.pageNumber, imageIds);
-        }
-      }
-
+      // Log the actual text being stored — this is how we verify PDF content is captured
       const fullText = pdfContent.pages
         .map((p) => `=== PAGE ${p.pageNumber} ===\n${p.text}`)
         .join('\n\n');
 
-      console.log(`[RAG Pipeline] Full text length: ${fullText.length} chars`);
-      console.log(`[RAG Pipeline] First 500 chars of fullText: ${fullText.substring(0, 500)}`);
+      console.log(`[RAG Pipeline] Total text: ${fullText.length} chars`);
+      console.log(`[RAG Pipeline] Text sample (first 800 chars):\n${fullText.substring(0, 800)}`);
+
+      const pageImageMap = new Map<number, string[]>();
+      for (const page of pdfContent.pages) {
+        const ids = page.images.map((img: any) => img.id);
+        if (ids.length > 0) pageImageMap.set(page.pageNumber, ids);
+      }
 
       const chunkedDoc = chunkingService.chunkDocument(
         pdfContent.id,
-        documentName,
+        pdfContent.fileName,
         fullText,
         pageImageMap
       );
 
       console.log(`[RAG Pipeline] Created ${chunkedDoc.chunks.length} chunks`);
-
       if (chunkedDoc.chunks.length === 0) {
-        throw new Error('No text chunks produced — PDF may have no extractable text.');
+        throw new Error('No chunks produced. PDF may have no extractable text.');
       }
+
+      // Log sample chunks to verify content
+      console.log(`[RAG Pipeline] Chunk 0 preview: ${chunkedDoc.chunks[0]?.text?.substring(0, 200)}`);
 
       const embeddings = await this.generateEmbeddingsForChunks(chunkedDoc.chunks);
 
-      const vectorIndex: VectorIndex[] = chunkedDoc.chunks.map((chunk, index) => ({
+      const vectorIndex: VectorIndex[] = chunkedDoc.chunks.map((chunk, i) => ({
         chunkId: chunk.id,
-        embedding: embeddings[index],
+        embedding: embeddings[i],
         text: chunk.text,
         documentId: pdfContent.id,
         pageNumber: chunk.metadata.pageNumber,
@@ -99,14 +94,12 @@ export class RAGPipelineService {
         relatedImages: chunk.metadata.relatedImages,
       }));
 
-      chunkedDoc.chunks.forEach((chunk, index) => {
-        chunk.embedding = embeddings[index];
-      });
+      chunkedDoc.chunks.forEach((chunk, i) => { chunk.embedding = embeddings[i]; });
 
       const ragContext: RAGContext = {
         id: ragId,
         documentId: pdfContent.id,
-        documentName,
+        documentName: pdfContent.fileName,
         chunks: chunkedDoc.chunks,
         vectorIndex,
         imageIds: chunkedDoc.imageIds,
@@ -118,191 +111,179 @@ export class RAGPipelineService {
       };
 
       this.ragContexts.set(ragId, ragContext);
-      console.log(`[RAG Pipeline] Stored context with ID: ${ragId}`);
-      console.log(`[RAG Pipeline] Done: ${ragContext.chunks.length} chunks indexed`);
-
+      console.log(`[RAG Pipeline] ✅ Stored context ID: ${ragId} (${this.ragContexts.size} total contexts)`);
       return ragContext;
     } catch (error) {
-      console.error('[RAG Pipeline] Error processing PDF:', error);
+      console.error('[RAG Pipeline] Error:', error);
       throw error;
     }
   }
 
   private async generateEmbeddingsForChunks(chunks: TextChunk[]): Promise<number[][]> {
     const texts = chunks.map((c) => c.text);
-    try {
-      const embeddings = await ollamaService.generateEmbeddings(texts);
-      console.log(`[RAG Pipeline] Generated ${embeddings.length} embeddings`);
-      return embeddings;
-    } catch (error) {
-      console.error('[RAG Pipeline] Error generating embeddings:', error);
-      throw error;
-    }
+    console.log(`[RAG Pipeline] Generating embeddings for ${texts.length} chunks...`);
+    const embeddings = await ollamaService.generateEmbeddings(texts);
+    console.log(`[RAG Pipeline] Generated ${embeddings.length} embeddings`);
+    return embeddings;
   }
 
   async retrieveContext(ragContextId: string, query: string): Promise<RetrievalResult> {
+    const ragContext = this.ragContexts.get(ragContextId);
+
+    if (!ragContext) {
+      const available = Array.from(this.ragContexts.keys()).join(', ') || 'none';
+      console.error(`[RAG Pipeline] ❌ Context NOT found: "${ragContextId}"`);
+      console.error(`[RAG Pipeline] Available context IDs: ${available}`);
+      throw new Error(`RAG context not found: ${ragContextId}. Available: ${available}`);
+    }
+
+    console.log(`[RAG Pipeline] ✅ Context found: ${ragContext.chunks.length} chunks`);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // For website generation we want ALL content from the document.
+    // Don't filter by similarity — a department name on page 1 is just as
+    // important as an achievement on page 5, regardless of query.
+    // ─────────────────────────────────────────────────────────────────────
+    let selected: (VectorIndex & { similarity: number })[];
+
     try {
-      const ragContext = this.ragContexts.get(ragContextId);
-      if (!ragContext) {
-        console.error(`[RAG Pipeline] Context not found for ID: ${ragContextId}`);
-        console.error(`[RAG Pipeline] Available IDs: ${Array.from(this.ragContexts.keys()).join(', ')}`);
-        throw new Error(`RAG context not found: ${ragContextId}`);
-      }
-
-      console.log(`[RAG Pipeline] Found context: ${ragContext.chunks.length} chunks`);
-
-      // ─────────────────────────────────────────────────────────────────────
-      // STRATEGY: Always return ALL chunks for website generation.
-      // Website content needs ALL information from the document:
-      // department name, HOD name, phone, address, achievements, programs —
-      // ALL of it matters. We don't filter by semantic relevance here.
-      // ─────────────────────────────────────────────────────────────────────
-      let selected: (VectorIndex & { similarity: number })[];
-
-      try {
-        const queryEmbedding = await ollamaService.generateEmbedding(query);
-        const withScores = ragContext.vectorIndex.map((item) => ({
+      const queryEmbedding = await ollamaService.generateEmbedding(query);
+      selected = ragContext.vectorIndex
+        .map((item) => ({
           ...item,
           similarity: ollamaService.cosineSimilarity(queryEmbedding, item.embedding),
-        }));
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .filter((item) => item.similarity >= this.similarityThreshold)
+        .slice(0, this.topK);
 
-        // Sort by similarity but take ALL chunks (topK=50 by default covers everything)
-        selected = withScores
-          .sort((a, b) => b.similarity - a.similarity)
-          .filter((item) => item.similarity >= this.similarityThreshold)
-          .slice(0, this.topK);
-
-        console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks`);
-      } catch (embErr) {
-        console.warn('[RAG Pipeline] Embedding query failed, using all chunks:', embErr);
-        selected = [];
-      }
-
-      // Always fallback to all chunks if selection is empty
-      if (selected.length === 0) {
-        console.log('[RAG Pipeline] Using all chunks (fallback)');
-        selected = ragContext.vectorIndex
-          .map((item) => ({ ...item, similarity: 1.0 }))
-          .sort((a, b) => a.pageNumber - b.pageNumber || a.chunkIndex - b.chunkIndex);
-      }
-
-      const contextLines: string[] = [];
-      const relatedImages = new Set<string>();
-      const retrievedChunks: TextChunk[] = [];
-
-      for (const item of selected) {
-        contextLines.push(`[Page ${item.pageNumber}]\n${item.text}`);
-        item.relatedImages?.forEach((img) => relatedImages.add(img));
-        const chunk = ragContext.chunks.find((c) => c.id === item.chunkId);
-        if (chunk) retrievedChunks.push(chunk);
-      }
-
-      const fullContext = contextLines.join('\n\n');
-      console.log(`[RAG Pipeline] Context assembled: ${selected.length} chunks, ${fullContext.length} chars`);
-      console.log(`[RAG Pipeline] Context preview: ${fullContext.substring(0, 400)}`);
-
-      return {
-        chunks: retrievedChunks,
-        similarity: selected.map((i) => i.similarity),
-        images: Array.from(relatedImages),
-        context: fullContext,
-      };
-    } catch (error) {
-      console.error('[RAG Pipeline] Error retrieving context:', error);
-      throw error;
+      console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks selected`);
+    } catch (err) {
+      console.warn('[RAG Pipeline] Embedding failed, using all chunks:', err);
+      selected = [];
     }
+
+    // Always fallback to ALL chunks if nothing selected
+    if (selected.length === 0) {
+      console.log('[RAG Pipeline] Using ALL chunks (full-document fallback)');
+      selected = ragContext.vectorIndex
+        .map((item) => ({ ...item, similarity: 1.0 }))
+        .sort((a, b) => a.pageNumber - b.pageNumber || a.chunkIndex - b.chunkIndex);
+    }
+
+    const contextParts: string[] = [];
+    const images = new Set<string>();
+    const chunks: TextChunk[] = [];
+
+    for (const item of selected) {
+      contextParts.push(`[Page ${item.pageNumber}]\n${item.text}`);
+      item.relatedImages?.forEach((img) => images.add(img));
+      const chunk = ragContext.chunks.find((c) => c.id === item.chunkId);
+      if (chunk) chunks.push(chunk);
+    }
+
+    const context = contextParts.join('\n\n');
+    console.log(`[RAG Pipeline] Context assembled: ${selected.length} chunks, ${context.length} chars`);
+    console.log(`[RAG Pipeline] Context sample:\n${context.substring(0, 600)}`);
+
+    return {
+      chunks,
+      similarity: selected.map((i) => i.similarity),
+      images: Array.from(images),
+      context,
+    };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // buildAugmentedPrompt
-  //
-  // This is what Claude actually receives as the user message.
-  // It must:
-  //   1. Present the full PDF text prominently at the top
-  //   2. Give very explicit instructions to use real data
-  //   3. Match the output format expected by codeGeneration.service.ts parser
-  //      (===PAGE_NAME:xxx=== / ===HTML=== / ===END HTML=== / ===END PAGE===)
-  // ─────────────────────────────────────────────────────────────────────────
   buildAugmentedPrompt(originalPrompt: string, ragContext: string, images: string[]): string {
-    const contextSection = ragContext && ragContext.trim().length > 0
-      ? `════════════════════════════════════════════════════════
-COMPLETE CONTENT EXTRACTED FROM UPLOADED PDF DOCUMENT:
-════════════════════════════════════════════════════════
+    const hasContext = ragContext && ragContext.trim().length > 0;
+
+    console.log(`[RAG Pipeline] Building augmented prompt. Context length: ${ragContext?.length || 0}`);
+
+    const contextBlock = hasContext
+      ? `════════════════════════════════════════════════════════════
+CONTENT EXTRACTED FROM UPLOADED PDF — USE THIS AS YOUR DATA SOURCE:
+════════════════════════════════════════════════════════════
 ${ragContext}
-════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════
 
 `
       : '';
 
-    return `${contextSection}USER REQUEST: ${originalPrompt}
+    const augmented = `${contextBlock}USER REQUEST: ${originalPrompt}
 
-════════════════════════════════════════════════════════
-MANDATORY INSTRUCTIONS — VIOLATION IS NOT ACCEPTABLE:
-════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════
+MANDATORY INSTRUCTIONS:
+════════════════════════════════════════════════════════════
 
-YOU MUST USE THE REAL DATA FROM THE PDF ABOVE:
-• Every person's name mentioned → display it in the website
-• Every phone number → show it on the Contact page
-• Every email address → show it on the Contact page  
-• Every physical address → show it on the Contact page
-• Every achievement/award → list it on an Achievements page
-• Every program/course/activity → list it
-• The organization/department name → use it in <h1> and <title>
-• Head of Department / Principal / Director name → show in hero section
-• DO NOT write "Lorem ipsum", "Name Here", "+91 XXXXXXXXXX", or any placeholder
-• Every single section must contain REAL text from the PDF above
+${hasContext ? `THE WEBSITE MUST CONTAIN THIS REAL INFORMATION FROM THE PDF:
+• Organization/Department name → use as the main heading (h1) and page title
+• All person names (HOD, Principal, Director, faculty) → display in relevant sections
+• All phone numbers → show on Contact page
+• All email addresses → show on Contact page
+• All physical addresses → show on Contact page
+• All achievements, awards, rankings → list on Achievements page
+• All programs, courses, departments → list on About page
+• All statistics, numbers, years → include in relevant sections
+• DO NOT invent placeholder names, numbers, or addresses
+• EVERY section of EVERY page must contain real text from the PDF above
 
-PAGES TO GENERATE (minimum 4):
-1. home — hero with org name, tagline, key highlights
-2. about — detailed description from document content
-3. achievements — ALL achievements, awards, milestones from document
+` : ''}Generate EXACTLY 4 complete pages:
+1. home — hero section with real org name, key highlights from document
+2. about — full description using real document content  
+3. achievements — ALL real achievements/awards/milestones listed
 4. contact — REAL phone, email, address from document
 
-OUTPUT FORMAT (follow exactly):
+OUTPUT FORMAT (exact):
 
 ===PAGE_NAME:home===
 ===HTML===
-[Complete standalone HTML page with embedded <style> tags]
+[Complete HTML document with embedded CSS and JS]
 ===END HTML===
 ===END PAGE===
 
 ===PAGE_NAME:about===
 ===HTML===
-[Complete standalone HTML page with embedded <style> tags]
+[Complete HTML document]
 ===END HTML===
 ===END PAGE===
 
-[continue for each page]
+===PAGE_NAME:achievements===
+===HTML===
+[Complete HTML document]
+===END HTML===
+===END PAGE===
 
-NAVIGATION: Each page must have a nav bar. For preview navigation use:
-onclick="parent.switchPage('pageid')" on nav links.
+===PAGE_NAME:contact===
+===HTML===
+[Complete HTML document]
+===END HTML===
+===END PAGE===`;
 
-Generate the complete website now using the PDF content above.`;
+    console.log(`[RAG Pipeline] Augmented prompt length: ${augmented.length} chars`);
+    console.log(`[RAG Pipeline] Prompt preview (first 600):\n${augmented.substring(0, 600)}`);
+
+    return augmented;
   }
 
   getRAGContext(ragContextId: string): RAGContext | undefined {
-    return this.ragContexts.get(ragContextId);
+    const ctx = this.ragContexts.get(ragContextId);
+    if (!ctx) {
+      console.warn(`[RAG Pipeline] getRAGContext: ID "${ragContextId}" not found. Available: ${Array.from(this.ragContexts.keys()).join(', ') || 'none'}`);
+    }
+    return ctx;
   }
 
-  listRAGContexts(): RAGContext[] {
-    return Array.from(this.ragContexts.values());
-  }
-
-  deleteRAGContext(ragContextId: string): boolean {
-    return this.ragContexts.delete(ragContextId);
-  }
-
-  clearAllContexts(): void {
-    this.ragContexts.clear();
-  }
+  listRAGContexts(): RAGContext[] { return Array.from(this.ragContexts.values()); }
+  deleteRAGContext(id: string): boolean { return this.ragContexts.delete(id); }
+  clearAllContexts(): void { this.ragContexts.clear(); }
 
   getStats() {
-    const contexts = Array.from(this.ragContexts.values());
+    const all = Array.from(this.ragContexts.values());
     return {
       activeContexts: this.ragContexts.size,
-      totalChunks: contexts.reduce((s, c) => s + c.metadata.totalChunks, 0),
-      totalWords: contexts.reduce((s, c) => s + c.metadata.totalWords, 0),
-      totalImages: contexts.reduce((s, c) => s + c.imageIds.length, 0),
+      totalChunks: all.reduce((s, c) => s + c.metadata.totalChunks, 0),
+      totalWords: all.reduce((s, c) => s + c.metadata.totalWords, 0),
+      totalImages: all.reduce((s, c) => s + c.imageIds.length, 0),
     };
   }
 }

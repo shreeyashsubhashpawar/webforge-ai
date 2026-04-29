@@ -9,48 +9,52 @@ import {
   WebPage,
 } from '@/types';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SYSTEM PROMPT
-// Tells Claude to:
-//   1. Use REAL data from the uploaded document
-//   2. Output in the exact page-block format we parse
-//   3. Embed ALL CSS inline inside each page (no external stylesheet references)
-//      so the iframe preview works without a file server
-// ─────────────────────────────────────────────────────────────────────────────
-const CODE_GENERATION_SYSTEM_PROMPT = `You are an expert full-stack web developer.
+const CODE_GENERATION_SYSTEM_PROMPT = `You are an expert web developer. Generate complete multi-page websites.
 
-CRITICAL RULE — REAL CONTENT:
-When the user's prompt contains document content extracted from a PDF, you MUST use the REAL data:
-- Real names → put them in HTML headings, not "John Doe"
-- Real phone numbers → display them, not "+91 XXXXXXXXXX"
-- Real addresses → show them, not "123 Main St"
-- Real achievements → list them as actual bullet points
-- Real department/organization names → use in <h1> and <title>
-- NEVER use lorem ipsum or placeholder text when real content was provided
+CRITICAL RULE — USE REAL CONTENT:
+When document content is provided, you MUST use the REAL data:
+- Real names → put them in HTML, never "John Doe"
+- Real phone numbers → display them, never "+91 XXXXXXXXXX"  
+- Real addresses → show them, never "123 Main St"
+- Real achievements → list as actual bullet points
+- Organization/department name → use in <h1> and <title>
+- NEVER use lorem ipsum when real content is provided
 
-OUTPUT FORMAT — follow EXACTLY, character for character:
+OUTPUT FORMAT — follow EXACTLY:
 
 ===PAGE_NAME:home===
 ===HTML===
-[Complete self-contained HTML page — include <html><head><style>...</style></head><body>...</body></html>]
-[Navigation links must use onclick="parent.switchPage('pageid')" to work inside the preview iframe]
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page Title</title>
+<style>
+/* All CSS embedded here */
+</style>
+</head>
+<body>
+<!-- Full page content -->
+<script>/* JS here */</script>
+</body>
+</html>
 ===END HTML===
 ===END PAGE===
 
 ===PAGE_NAME:about===
 ===HTML===
-[Complete self-contained HTML page]
+[complete HTML document]
 ===END HTML===
 ===END PAGE===
 
 RULES:
-1. Each page is a COMPLETE standalone HTML file with embedded <style> tags
-2. Navigation between pages: use onclick="parent.switchPage('pageid')" on anchor/button elements
-3. Generate MINIMUM 4 pages: home, about, achievements (or services), contact
-4. Every page must have a consistent navigation bar at the top
-5. Contact page must show real phone, email, address from the document
-6. Make it visually professional: gradients, cards, hover effects, responsive
-7. Use Google Fonts via <link> inside <head>`;
+1. Each page = COMPLETE standalone HTML with embedded <style> and <script>
+2. Generate EXACTLY 4 pages: home, about, achievements, contact
+3. Navigation: <a onclick="parent.switchPage('pageid'); return false;" href="#">Page Name</a>
+4. Contact page: show REAL phone, email, address from document
+5. Professional design: CSS Grid/Flexbox, gradients, hover effects, responsive
+6. DO NOT use external CSS files — embed everything in <style> tags`;
 
 export class CodeGenerationService {
   async generateWebsite(
@@ -64,22 +68,24 @@ export class CodeGenerationService {
         ? augmentedPrompt
         : this.buildGenerationPrompt(intent, design, this.buildDocumentContext(documents));
 
-      console.log(`[CodeGen] Generating website with ${augmentedPrompt ? 'RAG-augmented' : 'standard'} prompt`);
+      console.log(`[CodeGen] Mode: ${augmentedPrompt ? 'RAG-AUGMENTED' : 'standard'}`);
       console.log(`[CodeGen] Prompt length: ${prompt.length} chars`);
+      // Log first 500 chars of prompt so we can verify PDF content is in it
+      console.log(`[CodeGen] Prompt preview:\n${prompt.substring(0, 500)}\n...`);
 
       const response = await claudeService.sendMessage(
         [{ role: 'user', content: prompt }],
         {
           systemPrompt: CODE_GENERATION_SYSTEM_PROMPT,
           temperature: 0.3,
-          maxTokens: 8000,
+          maxTokens: 8192, // ✅ Must be 8192 — 4096 cuts off multi-page output
         }
       );
 
-      console.log(`[CodeGen] Claude response length: ${response.length} chars`);
-      console.log(`[CodeGen] Response preview: ${response.substring(0, 300)}`);
+      console.log(`[CodeGen] Claude response: ${response.length} chars`);
 
       const code = this.parseGeneratedCode(response);
+      console.log(`[CodeGen] Parsed ${code.pages.length} pages`);
       return code;
     } catch (error) {
       console.error('Error generating website code:', error);
@@ -89,13 +95,11 @@ export class CodeGenerationService {
 
   private buildDocumentContext(documents?: ProcessedDocument[]): string {
     if (!documents || documents.length === 0) return '';
-    let context = '\n\nRELEVANT CONTENT FROM UPLOADED DOCUMENTS:\n\n';
+    let ctx = '\n\nCONTENT FROM UPLOADED DOCUMENTS:\n\n';
     for (const doc of documents) {
-      context += `Document: ${doc.originalName}\n`;
-      context += doc.text.substring(0, 3000) + '\n\n';
-      if (doc.text.length > 3000) context += '[... document continues ...]\n\n';
+      ctx += `Document: ${doc.originalName}\n${doc.text.substring(0, 3000)}\n\n`;
     }
-    return context;
+    return ctx;
   }
 
   private buildGenerationPrompt(
@@ -103,68 +107,48 @@ export class CodeGenerationService {
     design: DesignRecommendation,
     documentContext: string
   ): string {
-    return `Generate a complete, production-ready MULTI-PAGE website.
+    return `Generate a complete MULTI-PAGE website.
 
-PRIMARY PURPOSE: ${intent.primaryIntent}
-DESIGN STYLE: ${intent.designPreferences?.style || 'modern'}
-
-DESIGN SYSTEM:
-- Primary Color: ${design.colorPalette?.primary || '#2563eb'}
-- Secondary Color: ${design.colorPalette?.secondary || '#1e40af'}
-- Accent: ${design.colorPalette?.accent || '#f59e0b'}
-- Background: ${design.colorPalette?.background || '#ffffff'}
-- Headings Font: ${design.typography?.headingFont || 'Inter'}
-- Body Font: ${design.typography?.bodyFont || 'Inter'}
+PURPOSE: ${intent.primaryIntent}
+STYLE: ${intent.designPreferences?.style || 'modern'}
+PRIMARY COLOR: ${design.colorPalette?.primary || '#2563eb'}
+HEADING FONT: ${design.typography?.headingFont || 'Inter'}
 
 REQUIREMENTS:
-${(intent.extractedRequirements || []).map((req: string, i: number) => `${i + 1}. ${req}`).join('\n')}
-
+${(intent.extractedRequirements || []).map((r: string, i: number) => `${i + 1}. ${r}`).join('\n')}
 ${documentContext}
 
-Generate 4+ pages. Make it production-ready and fully responsive.`;
+Generate 4 complete pages now.`;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // CRITICAL FIX — parseGeneratedCode
-  //
-  // BUG FOUND: The regex was:
-  //   /===PAGE_NAME:([^=]+)===[\\s\S]*?===END PAGE===/g
-  //
-  // In a JS string literal, [\\s\\S] becomes the literal text [\s\S] which is
-  // NOT a valid "any character" class — it matches only \, s, \, S literally.
-  // So the regex NEVER matched Claude's output → pages array was always empty
-  // → parseGeneratedCode threw "Failed to extract HTML" or returned garbage
-  // → frontend showed [object Object] and code tab showed character counts only.
-  //
-  // FIX: Use a RegExp constructor with a raw string so \s\S is interpreted
-  // correctly, OR use a regex literal. We use a regex literal here.
-  // ─────────────────────────────────────────────────────────────────────────
   private parseGeneratedCode(response: string): GeneratedCode {
     const pages = this.extractPages(response);
 
-    console.log(`[CodeGen] Extracted ${pages.length} pages from response`);
-
     if (pages.length === 0) {
-      console.error('[CodeGen] No pages extracted. Response preview:', response.substring(0, 800));
-      // Emergency fallback: wrap entire response as a single page
-      const fallbackPage: WebPage = {
+      console.error('[CodeGen] No pages found in response. Preview:\n', response.substring(0, 1000));
+      // Emergency: wrap raw response so user sees something
+      pages.push({
         id: 'index',
         name: 'Home',
         title: 'Home',
-        html: `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Generated Website</title></head><body>${response}</body></html>`,
+        html: `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Generated Website</title>
+<style>body{font-family:sans-serif;padding:2rem;max-width:900px;margin:0 auto}</style>
+</head><body><div style="background:#fef3c7;border:1px solid #f59e0b;padding:1rem;border-radius:8px;margin-bottom:1rem">
+<strong>⚠️ Parser could not extract structured pages.</strong><br>
+The raw Claude response is shown below. Check server logs for details.
+</div><pre style="white-space:pre-wrap;font-size:12px">${response.replace(/</g, '&lt;').substring(0, 5000)}</pre>
+</body></html>`,
         css: '',
         javascript: '',
         route: '/',
-      };
-      pages.push(fallbackPage);
+      });
     }
 
-    // Build file list — each page is a complete standalone HTML file
-    const files: GeneratedFile[] = pages.map((page) => ({
-      name: page.id === 'home' || page.id === 'index' ? 'index.html' : `${page.id}.html`,
+    const files: GeneratedFile[] = pages.map((page, idx) => ({
+      name: idx === 0 ? 'index.html' : `${page.id}.html`,
       type: 'html' as const,
-      content: page.html, // already a complete HTML document
-      path: page.id === 'home' || page.id === 'index' ? 'index.html' : `${page.id}.html`,
+      content: page.html,
+      path: idx === 0 ? 'index.html' : `${page.id}.html`,
     }));
 
     const website: GeneratedWebsite = {
@@ -173,133 +157,106 @@ Generate 4+ pages. Make it production-ready and fully responsive.`;
       framework: 'vanilla',
     };
 
-    return {
-      pages,
-      website,
-      framework: 'vanilla',
-      dependencies: [],
-    };
+    return { pages, website, framework: 'vanilla', dependencies: [] };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // extractPages — uses a regex LITERAL (not a string-constructed regex)
-  // so [\s\S] correctly means "any character including newlines"
-  // ─────────────────────────────────────────────────────────────────────────
   private extractPages(response: string): WebPage[] {
     const pages: WebPage[] = [];
 
-    // ✅ CORRECT regex literal — [\s\S]*? matches any character including newlines
+    // ✅ Regex literal — [\s\S] correctly matches any character including newlines
     const pagePattern = /===PAGE_NAME:([^=\n]+)===[\s\S]*?===END PAGE===/g;
     let match: RegExpExecArray | null;
 
     while ((match = pagePattern.exec(response)) !== null) {
-      const rawPageName = match[0].match(/===PAGE_NAME:([^=\n]+)===/)?.[1]?.trim() || 'page';
-      const pageBlock = match[0];
+      const rawName = match[0].match(/===PAGE_NAME:([^=\n]+)===/)?.[1]?.trim() || 'page';
+      const block = match[0];
+      const html = this.extractSection(block, 'HTML');
 
-      // Extract the HTML section
-      const html = this.extractSection(pageBlock, 'HTML');
-
-      if (html && html.trim().length > 0) {
-        const cleanedHtml = this.cleanCode(html);
-        const pageId = rawPageName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-
+      if (html && html.trim().length > 50) {
+        const clean = this.cleanCode(html);
+        const id = rawName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'page';
         pages.push({
-          id: pageId || 'page',
-          name: this.formatPageName(rawPageName),
-          title: this.formatPageName(rawPageName),
-          html: cleanedHtml, // complete HTML document
-          css: '',           // CSS is embedded inside html
-          javascript: '',    // JS is embedded inside html
-          route: `/${pageId}`,
+          id,
+          name: this.formatName(rawName),
+          title: this.formatName(rawName),
+          html: clean,
+          css: '',
+          javascript: '',
+          route: `/${id}`,
         });
-
-        console.log(`[CodeGen] Extracted page: "${rawPageName}" (${cleanedHtml.length} chars)`);
+        console.log(`[CodeGen] Page extracted: "${rawName}" — ${clean.length} chars`);
       }
     }
 
-    // Fallback: if Claude didn't use the PAGE_NAME format, try to extract a single page
+    // Fallback 1: find complete HTML documents anywhere in the response
     if (pages.length === 0) {
-      console.warn('[CodeGen] No PAGE_NAME blocks found — trying single-page fallback');
+      console.warn('[CodeGen] No PAGE_NAME blocks — trying HTML document fallback');
+      const docPattern = /<!DOCTYPE html>[\s\S]*?<\/html>/gi;
+      let docMatch: RegExpExecArray | null;
+      let docIdx = 0;
+      const pageNames = ['home', 'about', 'achievements', 'contact'];
 
-      // Look for a complete HTML document
-      const htmlDocMatch = response.match(/<!DOCTYPE html>[\s\S]*<\/html>/i);
-      if (htmlDocMatch) {
+      while ((docMatch = docPattern.exec(response)) !== null) {
+        const id = pageNames[docIdx] || `page-${docIdx + 1}`;
+        pages.push({
+          id,
+          name: this.formatName(id),
+          title: this.formatName(id),
+          html: docMatch[0],
+          css: '',
+          javascript: '',
+          route: `/${id}`,
+        });
+        docIdx++;
+        console.log(`[CodeGen] Fallback page ${docIdx}: "${id}" — ${docMatch[0].length} chars`);
+      }
+    }
+
+    // Fallback 2: find ===HTML=== sections
+    if (pages.length === 0) {
+      console.warn('[CodeGen] Trying ===HTML=== section fallback');
+      const html = this.extractSection(response, 'HTML');
+      if (html && html.length > 50) {
         pages.push({
           id: 'index',
           name: 'Home',
           title: 'Home',
-          html: htmlDocMatch[0],
-          css: '',
-          javascript: '',
+          html: this.cleanCode(html),
+          css: this.cleanCode(this.extractSection(response, 'CSS')),
+          javascript: this.cleanCode(this.extractSection(response, 'JAVASCRIPT')),
           route: '/',
         });
-        console.log('[CodeGen] Found complete HTML document as fallback');
-      } else {
-        // Last resort: try ===HTML=== markers
-        const html = this.extractSection(response, 'HTML');
-        if (html) {
-          pages.push({
-            id: 'index',
-            name: 'Home',
-            title: 'Home',
-            html: this.cleanCode(html),
-            css: this.cleanCode(this.extractSection(response, 'CSS')),
-            javascript: this.cleanCode(this.extractSection(response, 'JAVASCRIPT')),
-            route: '/',
-          });
-          console.log('[CodeGen] Found HTML section as last-resort fallback');
-        }
+        console.log('[CodeGen] HTML section fallback used');
       }
     }
 
     return pages;
   }
 
-  private formatPageName(raw: string): string {
-    return raw
-      .replace(/[-_]/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase())
-      .trim();
+  private formatName(raw: string): string {
+    return raw.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim();
   }
 
-  private extractSection(content: string, sectionName: string): string {
-    // Try ===SECTIONNAME=== format
-    const startMarker = `===${sectionName}===`;
-    const endMarker = `===END ${sectionName}===`;
+  private extractSection(content: string, name: string): string {
+    const start = `===${name}===`;
+    const end = `===END ${name}===`;
 
-    let startIndex = content.indexOf(startMarker);
-    if (startIndex === -1) {
-      // Try with spaces
-      const altStart = `=== ${sectionName} ===`;
-      startIndex = content.indexOf(altStart);
-      if (startIndex !== -1) {
-        const contentStart = startIndex + altStart.length;
-        const endIndex = content.indexOf(`=== END ${sectionName} ===`, contentStart);
-        return endIndex !== -1
-          ? content.substring(contentStart, endIndex).trim()
-          : content.substring(contentStart).trim();
-      }
-      return '';
+    let si = content.indexOf(start);
+    if (si === -1) return '';
+
+    const ci = si + start.length;
+    const ei = content.indexOf(end, ci);
+
+    if (ei !== -1) return content.substring(ci, ei).trim();
+
+    // No end marker — take until next section
+    const nexts = ['===CSS===', '===JAVASCRIPT===', '===END PAGE===', '===PAGE_NAME:'];
+    let nearest = -1;
+    for (const m of nexts) {
+      const i = content.indexOf(m, ci);
+      if (i !== -1 && (nearest === -1 || i < nearest)) nearest = i;
     }
-
-    const contentStart = startIndex + startMarker.length;
-    const endIndex = content.indexOf(endMarker, contentStart);
-
-    if (endIndex !== -1) {
-      return content.substring(contentStart, endIndex).trim();
-    }
-
-    // No end marker — take until next section or end
-    const nextSectionMarkers = ['===CSS===', '===JAVASCRIPT===', '===END PAGE===', '===PAGE_NAME:'];
-    let nearestNext = -1;
-    for (const m of nextSectionMarkers) {
-      const idx = content.indexOf(m, contentStart);
-      if (idx !== -1 && (nearestNext === -1 || idx < nearestNext)) nearestNext = idx;
-    }
-
-    return nearestNext !== -1
-      ? content.substring(contentStart, nearestNext).trim()
-      : content.substring(contentStart).trim();
+    return nearest !== -1 ? content.substring(ci, nearest).trim() : content.substring(ci).trim();
   }
 
   private cleanCode(code: string): string {
@@ -318,48 +275,28 @@ Generate 4+ pages. Make it production-ready and fully responsive.`;
     design: DesignRecommendation,
     documents?: ProcessedDocument[]
   ): AsyncGenerator<{ type: 'html' | 'css' | 'javascript' | 'complete'; content: string }> {
-    const documentContext = this.buildDocumentContext(documents);
-    const prompt = this.buildGenerationPrompt(intent, design, documentContext);
+    const prompt = this.buildGenerationPrompt(intent, design, this.buildDocumentContext(documents));
     let currentSection: 'html' | 'css' | 'javascript' | null = null;
-    let buffer = '';
 
     for await (const chunk of claudeService.streamMessage(
       [{ role: 'user', content: prompt }],
-      { systemPrompt: CODE_GENERATION_SYSTEM_PROMPT, temperature: 0.3, maxTokens: 8000 }
+      { systemPrompt: CODE_GENERATION_SYSTEM_PROMPT, temperature: 0.3, maxTokens: 8192 }
     )) {
-      buffer += chunk;
-      if (buffer.includes('===HTML===')) {
-        currentSection = 'html';
-        buffer = buffer.split('===HTML===')[1] || '';
-      } else if (buffer.includes('===CSS===')) {
-        currentSection = 'css';
-        buffer = buffer.split('===CSS===')[1] || '';
-      } else if (buffer.includes('===JAVASCRIPT===')) {
-        currentSection = 'javascript';
-        buffer = buffer.split('===JAVASCRIPT===')[1] || '';
-      }
-      if (currentSection && chunk) yield { type: currentSection, content: chunk };
+      if (chunk.includes('===HTML===')) currentSection = 'html';
+      else if (chunk.includes('===CSS===')) currentSection = 'css';
+      else if (chunk.includes('===JAVASCRIPT===')) currentSection = 'javascript';
+      if (currentSection) yield { type: currentSection, content: chunk };
     }
-    yield { type: 'complete', content: 'Generation complete' };
+    yield { type: 'complete', content: 'done' };
   }
 
   async refineCode(currentCode: GeneratedCode, feedback: string): Promise<GeneratedCode> {
-    const htmlSnippet = currentCode.pages?.[0]?.html?.substring(0, 1000) || currentCode.html?.substring(0, 1000) || 'No HTML available';
-
-    const prompt = `I have a generated website, but the user wants changes.
-
-CURRENT CODE (first page preview):
-${htmlSnippet}...
-
-USER FEEDBACK: "${feedback}"
-
-Generate the COMPLETE updated website incorporating the feedback. Use the same output format.`;
-
+    const preview = currentCode.pages?.[0]?.html?.substring(0, 800) || currentCode.html?.substring(0, 800) || '';
+    const prompt = `Existing website preview:\n${preview}\n\nUser feedback: "${feedback}"\n\nGenerate the COMPLETE updated website.`;
     const response = await claudeService.sendMessage(
       [{ role: 'user', content: prompt }],
-      { systemPrompt: CODE_GENERATION_SYSTEM_PROMPT, temperature: 0.5 }
+      { systemPrompt: CODE_GENERATION_SYSTEM_PROMPT, temperature: 0.5, maxTokens: 8192 }
     );
-
     return this.parseGeneratedCode(response);
   }
 }

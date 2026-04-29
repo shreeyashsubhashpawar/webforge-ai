@@ -2,17 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { webForgeService } from '@/services/webforge.service';
 import { GenerationRequest } from '@/types';
 
-export const maxDuration = 60; // Allow up to 60 seconds for generation
+// ✅ FIX: was 60 — Next.js was killing the request before Claude finished.
+// Full pipeline takes ~120s: RAG retrieval + intent + design + Claude generation + quality.
+export const maxDuration = 300;
 
-/**
- * POST /api/generate
- * Main endpoint for website generation
- */
 export async function POST(request: NextRequest) {
   try {
     const body: GenerationRequest = await request.json();
 
-    // Validate request
     if (!body.prompt || body.prompt.trim().length === 0) {
       return NextResponse.json(
         { success: false, error: 'Prompt is required' },
@@ -20,7 +17,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check for API key
     if (!process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json(
         { success: false, error: 'Anthropic API key not configured' },
@@ -32,9 +28,10 @@ export async function POST(request: NextRequest) {
       promptLength: body.prompt.length,
       hasDocuments: !!body.documents && body.documents.length > 0,
       hasPreferences: !!body.designPreferences,
+      // ✅ Log ragContextId so we can confirm it's arriving
+      ragContextId: body.ragContextId || 'NONE',
     });
 
-    // Generate website using WebForge service
     const result = await webForgeService.generateWebsite(body);
 
     if (!result.success) {
@@ -44,7 +41,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     console.error('Error in generation endpoint:', error);
-    
     return NextResponse.json(
       {
         success: false,
