@@ -2,6 +2,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { TextChunk, chunkingService } from '@/lib/rag/chunking';
 import { ollamaService } from './ollama.service';
 import { ExtractedPDFContent } from './pdfExtractor.service';
+import { writeFile, readFile, mkdir } from 'fs/promises';
+import { join } from 'path';
+import { existsSync } from 'fs';
 
 export interface VectorIndex {
   chunkId: string;
@@ -34,7 +37,52 @@ export interface RetrievalResult {
   context: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT CAUSE FIX:
+//
+// Next.js App Router compiles each API route into a SEPARATE server bundle.
+// /api/rag/process and /api/generate each get their own module instances.
+// A singleton Map in ragPipelineService is NOT shared between them — they are
+// literally different JavaScript processes/contexts.
+//
+// So context stored during /api/rag/process is INVISIBLE to /api/generate.
+// Log evidence: "Available: none" even though context was just stored.
+//
+// FIX: Persist RAG context as a JSON file on disk in /tmp/rag-contexts/.
+// Both routes read/write the same filesystem path → shared state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RAG_CONTEXT_DIR = join(process.cwd(), 'tmp', 'rag-contexts');
+
+async function ensureDir() {
+  if (!existsSync(RAG_CONTEXT_DIR)) {
+    await mkdir(RAG_CONTEXT_DIR, { recursive: true });
+  }
+}
+
+async function saveContextToDisk(context: RAGContext): Promise<void> {
+  await ensureDir();
+  const filePath = join(RAG_CONTEXT_DIR, `${context.id}.json`);
+  await writeFile(filePath, JSON.stringify(context), 'utf-8');
+  console.log(`[RAG Pipeline] 💾 Context saved to disk: ${filePath}`);
+}
+
+async function loadContextFromDisk(ragContextId: string): Promise<RAGContext | null> {
+  await ensureDir();
+  const filePath = join(RAG_CONTEXT_DIR, `${ragContextId}.json`);
+  try {
+    const raw = await readFile(filePath, 'utf-8');
+    const context = JSON.parse(raw) as RAGContext;
+    console.log(`[RAG Pipeline] 📂 Context loaded from disk: ${filePath}`);
+    return context;
+  } catch (err) {
+    console.warn(`[RAG Pipeline] Could not load context from disk: ${filePath}`, err);
+    return null;
+  }
+}
+
 export class RAGPipelineService {
+  // Keep in-memory cache as fast path
   private ragContexts: Map<string, RAGContext> = new Map();
   private topK: number;
   private similarityThreshold: number;
@@ -53,7 +101,6 @@ export class RAGPipelineService {
       console.log(`[RAG Pipeline] Processing: ${pdfContent.fileName}`);
       const ragId = uuidv4();
 
-      // Log the actual text being stored — this is how we verify PDF content is captured
       const fullText = pdfContent.pages
         .map((p) => `=== PAGE ${p.pageNumber} ===\n${p.text}`)
         .join('\n\n');
@@ -78,8 +125,6 @@ export class RAGPipelineService {
       if (chunkedDoc.chunks.length === 0) {
         throw new Error('No chunks produced. PDF may have no extractable text.');
       }
-
-      // Log sample chunks to verify content
       console.log(`[RAG Pipeline] Chunk 0 preview: ${chunkedDoc.chunks[0]?.text?.substring(0, 200)}`);
 
       const embeddings = await this.generateEmbeddingsForChunks(chunkedDoc.chunks);
@@ -110,8 +155,11 @@ export class RAGPipelineService {
         },
       };
 
+      // ✅ Store in memory AND on disk
       this.ragContexts.set(ragId, ragContext);
-      console.log(`[RAG Pipeline] ✅ Stored context ID: ${ragId} (${this.ragContexts.size} total contexts)`);
+      await saveContextToDisk(ragContext);
+
+      console.log(`[RAG Pipeline] ✅ Stored context ID: ${ragId} (memory + disk)`);
       return ragContext;
     } catch (error) {
       console.error('[RAG Pipeline] Error:', error);
@@ -128,22 +176,27 @@ export class RAGPipelineService {
   }
 
   async retrieveContext(ragContextId: string, query: string): Promise<RetrievalResult> {
-    const ragContext = this.ragContexts.get(ragContextId);
+    // ✅ Try memory first, then fall back to disk
+    let ragContext = this.ragContexts.get(ragContextId);
 
     if (!ragContext) {
-      const available = Array.from(this.ragContexts.keys()).join(', ') || 'none';
-      console.error(`[RAG Pipeline] ❌ Context NOT found: "${ragContextId}"`);
-      console.error(`[RAG Pipeline] Available context IDs: ${available}`);
-      throw new Error(`RAG context not found: ${ragContextId}. Available: ${available}`);
+      console.log(`[RAG Pipeline] Not in memory, loading from disk: ${ragContextId}`);
+      ragContext = await loadContextFromDisk(ragContextId) ?? undefined;
+      if (ragContext) {
+        // Cache it in memory for future calls
+        this.ragContexts.set(ragContextId, ragContext);
+        console.log(`[RAG Pipeline] ✅ Loaded from disk and cached in memory`);
+      }
+    }
+
+    if (!ragContext) {
+      console.error(`[RAG Pipeline] ❌ Context not found anywhere: ${ragContextId}`);
+      throw new Error(`RAG context not found: ${ragContextId}. Please re-upload your PDF.`);
     }
 
     console.log(`[RAG Pipeline] ✅ Context found: ${ragContext.chunks.length} chunks`);
 
-    // ─────────────────────────────────────────────────────────────────────
-    // For website generation we want ALL content from the document.
-    // Don't filter by similarity — a department name on page 1 is just as
-    // important as an achievement on page 5, regardless of query.
-    // ─────────────────────────────────────────────────────────────────────
+    // Return ALL chunks — for website generation we want all document content
     let selected: (VectorIndex & { similarity: number })[];
 
     try {
@@ -157,13 +210,12 @@ export class RAGPipelineService {
         .filter((item) => item.similarity >= this.similarityThreshold)
         .slice(0, this.topK);
 
-      console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks selected`);
+      console.log(`[RAG Pipeline] Similarity retrieval: ${selected.length} chunks`);
     } catch (err) {
-      console.warn('[RAG Pipeline] Embedding failed, using all chunks:', err);
+      console.warn('[RAG Pipeline] Embedding query failed, using all chunks:', err);
       selected = [];
     }
 
-    // Always fallback to ALL chunks if nothing selected
     if (selected.length === 0) {
       console.log('[RAG Pipeline] Using ALL chunks (full-document fallback)');
       selected = ragContext.vectorIndex
@@ -197,11 +249,11 @@ export class RAGPipelineService {
   buildAugmentedPrompt(originalPrompt: string, ragContext: string, images: string[]): string {
     const hasContext = ragContext && ragContext.trim().length > 0;
 
-    console.log(`[RAG Pipeline] Building augmented prompt. Context length: ${ragContext?.length || 0}`);
+    console.log(`[RAG Pipeline] Building augmented prompt. RAG context length: ${ragContext?.length || 0} chars`);
 
     const contextBlock = hasContext
       ? `════════════════════════════════════════════════════════════
-CONTENT EXTRACTED FROM UPLOADED PDF — USE THIS AS YOUR DATA SOURCE:
+CONTENT EXTRACTED FROM UPLOADED PDF — THIS IS YOUR DATA SOURCE:
 ════════════════════════════════════════════════════════════
 ${ragContext}
 ════════════════════════════════════════════════════════════
@@ -209,35 +261,36 @@ ${ragContext}
 `
       : '';
 
-    const augmented = `${contextBlock}USER REQUEST: ${originalPrompt}
+    const prompt = `${contextBlock}USER REQUEST: ${originalPrompt}
 
 ════════════════════════════════════════════════════════════
 MANDATORY INSTRUCTIONS:
 ════════════════════════════════════════════════════════════
 
-${hasContext ? `THE WEBSITE MUST CONTAIN THIS REAL INFORMATION FROM THE PDF:
-• Organization/Department name → use as the main heading (h1) and page title
-• All person names (HOD, Principal, Director, faculty) → display in relevant sections
+${hasContext ? `USE ONLY REAL DATA FROM THE PDF ABOVE — MANDATORY:
+• Organization/Company name from document → use as <h1> and <title>
+• All person names, roles, designations → display in relevant sections
 • All phone numbers → show on Contact page
 • All email addresses → show on Contact page
-• All physical addresses → show on Contact page
-• All achievements, awards, rankings → list on Achievements page
-• All programs, courses, departments → list on About page
-• All statistics, numbers, years → include in relevant sections
-• DO NOT invent placeholder names, numbers, or addresses
-• EVERY section of EVERY page must contain real text from the PDF above
+• All physical addresses / office locations → show on Contact page
+• All achievements, awards, certifications → list on Achievements page
+• All services, products, capabilities → list on Services/About page
+• All statistics (employees, offices, years, countries) → use in hero/about
+• Timeline / history if present → show as visual timeline
+• DO NOT invent any names, numbers, or placeholder data
+• EVERY section must contain REAL text from the PDF above
 
 ` : ''}Generate EXACTLY 4 complete pages:
-1. home — hero section with real org name, key highlights from document
-2. about — full description using real document content  
-3. achievements — ALL real achievements/awards/milestones listed
+1. home — hero with real company name, tagline, key stats from document
+2. about — full company description using real document content
+3. services — ALL real services/products/capabilities listed
 4. contact — REAL phone, email, address from document
 
-OUTPUT FORMAT (exact):
+OUTPUT FORMAT (follow exactly):
 
 ===PAGE_NAME:home===
 ===HTML===
-[Complete HTML document with embedded CSS and JS]
+[Complete HTML document with ALL CSS embedded in <style> tags]
 ===END HTML===
 ===END PAGE===
 
@@ -247,7 +300,7 @@ OUTPUT FORMAT (exact):
 ===END HTML===
 ===END PAGE===
 
-===PAGE_NAME:achievements===
+===PAGE_NAME:services===
 ===HTML===
 [Complete HTML document]
 ===END HTML===
@@ -259,23 +312,25 @@ OUTPUT FORMAT (exact):
 ===END HTML===
 ===END PAGE===`;
 
-    console.log(`[RAG Pipeline] Augmented prompt length: ${augmented.length} chars`);
-    console.log(`[RAG Pipeline] Prompt preview (first 600):\n${augmented.substring(0, 600)}`);
-
-    return augmented;
+    console.log(`[RAG Pipeline] Augmented prompt length: ${prompt.length} chars`);
+    return prompt;
   }
 
   getRAGContext(ragContextId: string): RAGContext | undefined {
-    const ctx = this.ragContexts.get(ragContextId);
-    if (!ctx) {
-      console.warn(`[RAG Pipeline] getRAGContext: ID "${ragContextId}" not found. Available: ${Array.from(this.ragContexts.keys()).join(', ') || 'none'}`);
-    }
-    return ctx;
+    return this.ragContexts.get(ragContextId);
   }
 
-  listRAGContexts(): RAGContext[] { return Array.from(this.ragContexts.values()); }
-  deleteRAGContext(id: string): boolean { return this.ragContexts.delete(id); }
-  clearAllContexts(): void { this.ragContexts.clear(); }
+  listRAGContexts(): RAGContext[] {
+    return Array.from(this.ragContexts.values());
+  }
+
+  deleteRAGContext(id: string): boolean {
+    return this.ragContexts.delete(id);
+  }
+
+  clearAllContexts(): void {
+    this.ragContexts.clear();
+  }
 
   getStats() {
     const all = Array.from(this.ragContexts.values());
